@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { config } from '../lib/config.js';
 import type {
   Scores,
@@ -9,8 +9,10 @@ import type {
   Classification,
 } from '../types/index.js';
 
-const anthropic = new Anthropic({
-  apiKey: config.anthropicApiKey,
+// Perplexity uses OpenAI-compatible API
+const perplexity = new OpenAI({
+  apiKey: config.perplexityApiKey,
+  baseURL: 'https://api.perplexity.ai',
 });
 
 interface TickerContext {
@@ -23,28 +25,33 @@ interface TickerContext {
 }
 
 /**
- * Use Claude to generate detailed analysis for a ticker
+ * Use Perplexity to generate detailed analysis for a ticker
  */
 export async function generateAnalysis(context: TickerContext): Promise<ClassificationResult> {
   const prompt = buildPrompt(context);
 
   try {
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
+    const response = await perplexity.chat.completions.create({
+      model: 'llama-3.1-sonar-small-128k-online',
       messages: [
+        {
+          role: 'system',
+          content: 'You are a quantitative stock analyst. Respond only with valid JSON, no markdown or explanation.',
+        },
         {
           role: 'user',
           content: prompt,
         },
       ],
+      max_tokens: 1024,
+      temperature: 0.2,
     });
 
-    const responseText = message.content[0].type === 'text' ? message.content[0].text : '';
+    const responseText = response.choices[0]?.message?.content || '';
     return parseResponse(responseText, context.preliminaryClassification);
   } catch (error) {
-    console.error(`Claude analysis failed for ${context.ticker}:`, error);
-    // Return a default response if Claude fails
+    console.error(`Perplexity analysis failed for ${context.ticker}:`, error);
+    // Return a default response if Perplexity fails
     return {
       classification: context.preliminaryClassification,
       confidence: 0.5,
@@ -58,7 +65,7 @@ export async function generateAnalysis(context: TickerContext): Promise<Classifi
 function buildPrompt(context: TickerContext): string {
   const { ticker, scores, sentiment, price, fundamentals, preliminaryClassification } = context;
 
-  return `You are a quantitative stock analyst. Analyze this penny stock and provide a brief assessment.
+  return `Analyze this penny stock and provide a brief assessment.
 
 TICKER: ${ticker}
 COMPANY: ${fundamentals.name || 'Unknown'}
@@ -94,27 +101,26 @@ FUNDAMENTALS:
 
 PRELIMINARY CLASSIFICATION: ${preliminaryClassification}
 
-Respond with a JSON object containing:
+Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "classification": "runner" | "value" | "both" | "avoid" | "watch",
   "confidence": 0.0-1.0,
   "bullCase": "1-2 sentence bull case",
   "bearCase": "1-2 sentence bear case",
   "catalysts": ["catalyst1", "catalyst2"]
-}
-
-Be concise. Focus on actionable insights. If this looks like a pump-and-dump, say so clearly in the bear case.`;
+}`;
 }
 
 function parseResponse(response: string, fallbackClassification: Classification): ClassificationResult {
   try {
-    // Extract JSON from response (handle markdown code blocks)
+    // Extract JSON from response (handle markdown code blocks if present)
+    let jsonStr = response.trim();
     const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in response');
+    if (jsonMatch) {
+      jsonStr = jsonMatch[0];
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
 
     return {
       classification: validateClassification(parsed.classification) || fallbackClassification,
@@ -124,7 +130,8 @@ function parseResponse(response: string, fallbackClassification: Classification)
       catalysts: Array.isArray(parsed.catalysts) ? parsed.catalysts.filter((c: unknown) => typeof c === 'string') : [],
     };
   } catch (error) {
-    console.error('Failed to parse Claude response:', error);
+    console.error('Failed to parse Perplexity response:', error);
+    console.error('Raw response:', response);
     return {
       classification: fallbackClassification,
       confidence: 0.5,

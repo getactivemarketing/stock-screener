@@ -17,12 +17,12 @@ pool.on('error', (err) => {
   process.exit(-1);
 });
 
-export async function query<T = unknown>(
+export async function query(
   text: string,
   params?: unknown[]
-): Promise<pg.QueryResult<T>> {
+): Promise<pg.QueryResult> {
   const start = Date.now();
-  const res = await pool.query<T>(text, params);
+  const res = await pool.query(text, params);
   const duration = Date.now() - start;
   console.log('Executed query', { text: text.substring(0, 50), duration, rows: res.rowCount });
   return res;
