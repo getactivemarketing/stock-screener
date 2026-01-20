@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm run pipeline"
+restartPolicyType = "never"
+
+# Run hourly during market hours (9am-5pm ET, Mon-Fri)
+# Cron runs in UTC, so 9am-5pm ET = 14:00-22:00 UTC
+[cron]
+schedule = "0 14-22 * * 1-5"
