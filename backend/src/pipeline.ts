@@ -6,7 +6,7 @@ import finnhub from './services/finnhub.js';
 import scoring from './services/scoring.js';
 import classifier from './services/classifier.js';
 import { universeConfig } from './lib/config.js';
-import { chunk, sleep } from './lib/http.js';
+import { sleep } from './lib/http.js';
 import type {
   SentimentData,
   MergedSentiment,
@@ -39,8 +39,10 @@ async function runPipeline() {
     // Step 3: Merge sentiment by ticker
     console.log('\n[2/6] Merging sentiment data by ticker...');
     const mergedSentiment = mergeSentimentByTicker(sentimentData);
-    const tickers = Object.keys(mergedSentiment);
-    console.log(`Unique tickers to analyze: ${tickers.length}`);
+    // Limit to top 20 tickers for faster runs (remove this limit in production)
+    const MAX_TICKERS = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 20;
+    const tickers = Object.keys(mergedSentiment).slice(0, MAX_TICKERS);
+    console.log(`Unique tickers to analyze: ${tickers.length} (limited from ${Object.keys(mergedSentiment).length})`);
 
     // Step 4: Fetch price and fundamental data (with rate limiting)
     console.log('\n[3/6] Fetching price and fundamental data...');
@@ -160,42 +162,34 @@ async function enrichTickersWithMarketData(
 ): Promise<Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>> {
   const results: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> = [];
 
-  // Process in chunks to respect rate limits
-  const tickerChunks = chunk(tickers, 5);
+  // Process one ticker at a time to respect Finnhub free tier rate limits
+  // Each ticker needs ~4 API calls, so we space them out
   let processed = 0;
 
-  for (const tickerBatch of tickerChunks) {
-    const batchResults = await Promise.all(
-      tickerBatch.map(async (ticker) => {
-        try {
-          const [price, fundamentals] = await Promise.all([
-            finnhub.fetchPriceData(ticker),
-            finnhub.fetchFundamentalData(ticker),
-          ]);
+  for (const ticker of tickers) {
+    try {
+      // Fetch price and fundamentals sequentially to avoid rate limits
+      const price = await finnhub.fetchPriceData(ticker);
+      const fundamentals = await finnhub.fetchFundamentalData(ticker);
 
-          if (price && fundamentals) {
-            return {
-              sentiment: sentimentMap[ticker],
-              price,
-              fundamentals,
-            };
-          }
-        } catch (error) {
-          console.warn(`Failed to enrich ${ticker}:`, error);
-        }
-        return null;
-      })
-    );
-
-    results.push(...batchResults.filter((r): r is NonNullable<typeof r> => r !== null));
-
-    processed += tickerBatch.length;
-    console.log(`  Progress: ${processed}/${tickers.length} tickers`);
-
-    // Small delay between batches
-    if (processed < tickers.length) {
-      await sleep(500);
+      if (price && fundamentals) {
+        results.push({
+          sentiment: sentimentMap[ticker],
+          price,
+          fundamentals,
+        });
+      }
+    } catch (error) {
+      console.warn(`Failed to enrich ${ticker}:`, error);
     }
+
+    processed++;
+    if (processed % 10 === 0) {
+      console.log(`  Progress: ${processed}/${tickers.length} tickers`);
+    }
+
+    // Delay between tickers to stay under rate limit
+    await sleep(2000);
   }
 
   return results;
@@ -207,14 +201,24 @@ async function enrichTickersWithMarketData(
 function applyUniverseFilters(
   tickers: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
 ): Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> {
+  // For testing, skip filters if TEST_MODE is set
+  if (process.env.TEST_MODE === 'true') {
+    console.log('  TEST_MODE: Skipping universe filters');
+    return tickers;
+  }
+
   return tickers.filter(({ price, fundamentals }) => {
+    const ticker = price.ticker;
+
     // Price filter
     if (price.price > universeConfig.maxPrice) {
+      console.log(`  Filtered ${ticker}: price $${price.price} > $${universeConfig.maxPrice}`);
       return false;
     }
 
     // Market cap filter (exclude mega caps)
     if (fundamentals.marketCap > universeConfig.maxMarketCap) {
+      console.log(`  Filtered ${ticker}: market cap too large`);
       return false;
     }
 
@@ -224,6 +228,7 @@ function applyUniverseFilters(
       (c) => country.includes(c.toUpperCase())
     );
     if (!isUSListed && country !== '') {
+      console.log(`  Filtered ${ticker}: country ${country} not US`);
       return false;
     }
 
@@ -233,6 +238,7 @@ function applyUniverseFilters(
       (e) => exchange.includes(e.toUpperCase())
     );
     if (!isAllowedExchange && exchange !== '') {
+      console.log(`  Filtered ${ticker}: exchange ${exchange} not allowed`);
       return false;
     }
 

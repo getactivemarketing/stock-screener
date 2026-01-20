@@ -41,7 +41,7 @@ export class RateLimiter {
 // Rate limiters for different APIs
 export const rateLimiters = {
   alphaVantage: new RateLimiter(1, 12000), // 5 calls/min = 12s between calls
-  finnhub: new RateLimiter(2, 1000), // 60 calls/min
+  finnhub: new RateLimiter(1, 1500), // 60 calls/min = 1 call/sec, with buffer
   apewisdom: new RateLimiter(2, 500),
   swaggy: new RateLimiter(1, 1000),
   altindex: new RateLimiter(1, 1000),
