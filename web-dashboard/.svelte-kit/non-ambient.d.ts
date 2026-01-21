@@ -27,7 +27,7 @@ export {};
 
 declare module "$app/types" {
 	export interface AppTypes {
-		RouteId(): "/" | "/analytics" | "/api" | "/api/analytics" | "/api/screener" | "/api/sectors" | "/api/ticker" | "/api/ticker/[symbol]" | "/api/webull" | "/portfolio" | "/sectors" | "/ticker" | "/ticker/[symbol]";
+		RouteId(): "/" | "/analytics" | "/api" | "/api/alpaca" | "/api/analytics" | "/api/screener" | "/api/sectors" | "/api/ticker" | "/api/ticker/[symbol]" | "/api/webull" | "/portfolio" | "/sectors" | "/ticker" | "/ticker/[symbol]";
 		RouteParams(): {
 			"/api/ticker/[symbol]": { symbol: string };
 			"/ticker/[symbol]": { symbol: string }
@@ -36,6 +36,7 @@ declare module "$app/types" {
 			"/": { symbol?: string };
 			"/analytics": Record<string, never>;
 			"/api": { symbol?: string };
+			"/api/alpaca": Record<string, never>;
 			"/api/analytics": Record<string, never>;
 			"/api/screener": Record<string, never>;
 			"/api/sectors": Record<string, never>;
@@ -47,7 +48,7 @@ declare module "$app/types" {
 			"/ticker": { symbol?: string };
 			"/ticker/[symbol]": { symbol: string }
 		};
-		Pathname(): "/" | "/analytics" | "/analytics/" | "/api" | "/api/" | "/api/analytics" | "/api/analytics/" | "/api/screener" | "/api/screener/" | "/api/sectors" | "/api/sectors/" | "/api/ticker" | "/api/ticker/" | `/api/ticker/${string}` & {} | `/api/ticker/${string}/` & {} | "/api/webull" | "/api/webull/" | "/portfolio" | "/portfolio/" | "/sectors" | "/sectors/" | "/ticker" | "/ticker/" | `/ticker/${string}` & {} | `/ticker/${string}/` & {};
+		Pathname(): "/" | "/analytics" | "/analytics/" | "/api" | "/api/" | "/api/alpaca" | "/api/alpaca/" | "/api/analytics" | "/api/analytics/" | "/api/screener" | "/api/screener/" | "/api/sectors" | "/api/sectors/" | "/api/ticker" | "/api/ticker/" | `/api/ticker/${string}` & {} | `/api/ticker/${string}/` & {} | "/api/webull" | "/api/webull/" | "/portfolio" | "/portfolio/" | "/sectors" | "/sectors/" | "/ticker" | "/ticker/" | `/ticker/${string}` & {} | `/ticker/${string}/` & {};
 		ResolvedPathname(): `${"" | `/${string}`}${ReturnType<AppTypes['Pathname']>}`;
 		Asset(): "/favicon.png" | string & {};
 	}

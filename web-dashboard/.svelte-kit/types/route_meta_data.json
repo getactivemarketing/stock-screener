@@ -3,6 +3,9 @@
 		"src/routes/+page.server.ts"
 	],
 	"/analytics": [],
+	"/api/alpaca": [
+		"src/routes/api/alpaca/+server.ts"
+	],
 	"/api/analytics": [
 		"src/routes/api/analytics/+server.ts"
 	],

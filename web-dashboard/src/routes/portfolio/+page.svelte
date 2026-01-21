@@ -62,10 +62,11 @@
 
   async function fetchAccount() {
     try {
-      const res = await fetch('/api/webull?type=account');
+      const res = await fetch('/api/alpaca?type=account');
       if (res.ok) {
-        account = await res.json();
-        connected = true;
+        const data = await res.json();
+        account = data;
+        connected = data.connected !== false;
       }
     } catch (e) {
       console.error('Failed to fetch account:', e);
@@ -74,7 +75,7 @@
 
   async function fetchPositions() {
     try {
-      const res = await fetch('/api/webull?type=positions');
+      const res = await fetch('/api/alpaca?type=positions');
       if (res.ok) {
         positions = await res.json();
       }
@@ -85,7 +86,7 @@
 
   async function fetchOrders() {
     try {
-      const res = await fetch('/api/webull?type=orders');
+      const res = await fetch('/api/alpaca?type=orders');
       if (res.ok) {
         orders = await res.json();
       }
@@ -104,7 +105,7 @@
     orderMessage = '';
 
     try {
-      const res = await fetch('/api/webull', {
+      const res = await fetch('/api/alpaca', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -122,8 +123,8 @@
         orderMessage = `Order placed: ${orderAction} ${orderQuantity} ${orderTicker}`;
         orderTicker = '';
         orderQuantity = 1;
-        // Refresh orders
-        await fetchOrders();
+        // Refresh orders and positions
+        await Promise.all([fetchOrders(), fetchPositions()]);
       } else {
         orderMessage = result.error || 'Order failed';
       }
@@ -163,14 +164,14 @@
   </div>
 {:else if !connected}
   <div class="card connect-card">
-    <h3>Connect Webull Account</h3>
-    <p>To use portfolio features, configure your Webull credentials in the environment variables:</p>
+    <h3>Connect Alpaca Account</h3>
+    <p>To use portfolio features, configure your Alpaca API credentials in Vercel environment variables:</p>
     <ul>
-      <li><code>WEBULL_EMAIL</code></li>
-      <li><code>WEBULL_PASSWORD</code></li>
-      <li><code>WEBULL_TRADING_PIN</code> (for paper trading)</li>
+      <li><code>ALPACA_API_KEY</code></li>
+      <li><code>ALPACA_API_SECRET</code></li>
     </ul>
-    <p class="note">Paper trading is enabled by default for safety.</p>
+    <p class="note">Get your free API keys at <a href="https://alpaca.markets" target="_blank">alpaca.markets</a></p>
+    <p class="note">Paper trading is used by default for safety.</p>
   </div>
 {:else}
   <!-- Account Summary -->
@@ -419,6 +420,10 @@
     color: var(--text-muted);
     font-size: 0.875rem;
     margin-top: 1rem;
+  }
+
+  .note a {
+    color: var(--blue);
   }
 
   .account-summary {
