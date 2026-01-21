@@ -13,6 +13,7 @@
         <a href="/">Screener</a>
         <a href="/sectors">Sectors</a>
         <a href="/analytics">Analytics</a>
+        <a href="/portfolio">Portfolio</a>
       </nav>
     </div>
   </div>

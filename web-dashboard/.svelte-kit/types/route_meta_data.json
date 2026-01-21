@@ -12,6 +12,10 @@
 	"/api/ticker/[symbol]": [
 		"src/routes/api/ticker/[symbol]/+server.ts"
 	],
+	"/api/webull": [
+		"src/routes/api/webull/+server.ts"
+	],
+	"/portfolio": [],
 	"/sectors": [],
 	"/ticker/[symbol]": [
 		"src/routes/ticker/[symbol]/+page.server.ts"

@@ -1,1 +1,1 @@
-export { default as component } from "../../../../src/routes/ticker/[symbol]/+page.svelte";
+export { default as component } from "../../../../src/routes/sectors/+page.svelte";
