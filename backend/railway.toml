@@ -2,10 +2,14 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "npm run pipeline"
+# RUN_MODE env var controls which script runs:
+# - "pipeline" (default): runs the screener pipeline
+# - "returns": runs the return tracker
+startCommand = "if [ \"$RUN_MODE\" = \"returns\" ]; then npm run returns; else npm run pipeline; fi"
 restartPolicyType = "never"
 
-# Run hourly during market hours (9am-5pm ET, Mon-Fri)
-# Cron runs in UTC, so 9am-5pm ET = 14:00-22:00 UTC
+# Cron schedule is set per-service via Railway dashboard
+# Pipeline: "*/30 14-22 * * 1-5" (every 30 min during market hours)
+# Returns: "0 11 * * *" (daily at 6am ET)
 [cron]
-schedule = "0 14-22 * * 1-5"
+schedule = "*/30 14-22 * * 1-5"

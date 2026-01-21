@@ -5,6 +5,9 @@ import apewisdom from './services/apewisdom.js';
 import finnhub from './services/finnhub.js';
 import scoring from './services/scoring.js';
 import classifier from './services/classifier.js';
+import { fetchSwaggyTrending } from './services/swaggy.js';
+import { fetchStocktwitsTrending, fetchStocktwitsActive } from './services/stocktwits.js';
+import { fetchAllFinvizSignals } from './services/finviz.js';
 import { universeConfig } from './lib/config.js';
 import { sleep } from './lib/http.js';
 import type {
@@ -83,8 +86,8 @@ async function runPipeline() {
 async function fetchAllSentimentData(): Promise<SentimentData[]> {
   const results: SentimentData[] = [];
 
-  // ApeWisdom - fetch from multiple subreddits
-  console.log('  - Fetching from ApeWisdom...');
+  // ApeWisdom - fetch from multiple subreddits (Reddit aggregator)
+  console.log('  - Fetching from ApeWisdom (Reddit)...');
   const [allStocks, pennystocks, wsb] = await Promise.all([
     apewisdom.fetchTrendingStocks('all-stocks'),
     apewisdom.fetchTrendingStocks('pennystocks'),
@@ -93,9 +96,51 @@ async function fetchAllSentimentData(): Promise<SentimentData[]> {
   results.push(...allStocks, ...pennystocks, ...wsb);
   console.log(`    Found ${allStocks.length + pennystocks.length + wsb.length} entries from ApeWisdom`);
 
-  // TODO: Add Swaggy and AltIndex when API keys are available
-  // console.log('  - Fetching from Swaggy...');
-  // console.log('  - Fetching from AltIndex...');
+  // Swaggy Stocks - options flow and WSB sentiment
+  console.log('  - Fetching from Swaggy Stocks...');
+  const swaggyData = await fetchSwaggyTrending();
+  for (const item of swaggyData) {
+    results.push({
+      ticker: item.ticker,
+      source: 'swaggy',
+      mentions: item.mentions,
+      sentiment: item.sentiment,
+      rank: 0,
+    });
+  }
+  console.log(`    Found ${swaggyData.length} entries from Swaggy Stocks`);
+
+  // Stocktwits - social sentiment platform
+  console.log('  - Fetching from Stocktwits...');
+  const [stTrending, stActive] = await Promise.all([
+    fetchStocktwitsTrending(),
+    fetchStocktwitsActive(),
+  ]);
+  const stocktwitsData = [...stTrending, ...stActive];
+  for (const item of stocktwitsData) {
+    results.push({
+      ticker: item.ticker,
+      source: 'stocktwits',
+      mentions: item.watchlistCount,
+      sentiment: item.sentiment,
+      rank: 0,
+    });
+  }
+  console.log(`    Found ${stocktwitsData.length} entries from Stocktwits`);
+
+  // Finviz - technical/fundamental screener signals
+  console.log('  - Fetching from Finviz Screener...');
+  const finvizData = await fetchAllFinvizSignals();
+  for (const item of finvizData) {
+    results.push({
+      ticker: item.ticker,
+      source: 'finviz',
+      mentions: 1, // Signal count as proxy
+      sentiment: 75, // Neutral-positive since it passed screener
+      rank: 0,
+    });
+  }
+  console.log(`    Found ${finvizData.length} entries from Finviz`);
 
   return results;
 }
@@ -143,7 +188,9 @@ function mergeSentimentByTicker(data: SentimentData[]): Record<string, MergedSen
         m.totalMentions += source.mentions;
         totalSentiment += source.sentiment;
         sentimentCount++;
-        m.maxMomentum = Math.max(m.maxMomentum, source.momentum);
+        if (source.momentum) {
+          m.maxMomentum = Math.max(m.maxMomentum, source.momentum);
+        }
       }
     }
 
@@ -360,13 +407,13 @@ async function saveResults(analyses: TickerAnalysis[]): Promise<void> {
         price.change5dPercent,
         price.change30d,
         price.change30dPercent,
-        price.volume,
-        price.avgVolume30d,
+        price.volume ? Math.round(price.volume) : null,
+        price.avgVolume30d ? Math.round(price.avgVolume30d) : null,
         price.relativeVolume,
         price.high52w,
         price.low52w,
         fundamentals.name,
-        fundamentals.marketCap,
+        fundamentals.marketCap ? Math.round(fundamentals.marketCap) : null,
         fundamentals.peRatio,
         fundamentals.psRatio,
         fundamentals.pbRatio,

@@ -1,0 +1,19 @@
+{
+	"/": [
+		"src/routes/+page.server.ts"
+	],
+	"/analytics": [],
+	"/api/analytics": [
+		"src/routes/api/analytics/+server.ts"
+	],
+	"/api/sectors": [
+		"src/routes/api/sectors/+server.ts"
+	],
+	"/api/ticker/[symbol]": [
+		"src/routes/api/ticker/[symbol]/+server.ts"
+	],
+	"/sectors": [],
+	"/ticker/[symbol]": [
+		"src/routes/ticker/[symbol]/+page.server.ts"
+	]
+}

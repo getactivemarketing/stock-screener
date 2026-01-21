@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm run returns"
+restartPolicyType = "never"
+
+# Run daily at 6am ET (11:00 UTC) to calculate returns after market closes
+# This gives picks from the previous day time to have 1-day returns
+[cron]
+schedule = "0 11 * * *"

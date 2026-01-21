@@ -1,0 +1,22 @@
+{
+  "name": "stock-screener-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-vercel": "^5.5.0",
+    "@sveltejs/kit": "^2.16.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "svelte": "^5.19.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.1.0"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "type": "module"
+}

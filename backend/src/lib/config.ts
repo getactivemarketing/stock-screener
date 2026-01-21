@@ -65,9 +65,9 @@ export const alertConfig = {
 
 // Universe filters
 export const universeConfig = {
-  maxPrice: 10,
-  maxMarketCap: 20_000_000_000, // $20B
-  allowedCountries: ['USA', 'United States'],
+  maxPrice: Infinity, // No price limit
+  maxMarketCap: Infinity, // No market cap limit
+  allowedCountries: ['USA', 'United States', 'US'],
   allowedExchanges: [
     'NYSE',
     'NASDAQ',
@@ -78,6 +78,11 @@ export const universeConfig = {
     'OTCQX',
     'OTCQB',
     'PINK',
+    'NEW YORK STOCK EXCHANGE, INC.',
+    'NASDAQ NMS - GLOBAL MARKET',
+    'NASDAQ CAPITAL MARKET',
+    'NASDAQ/NGS (GLOBAL SELECT MARKET)',
+    'NYSE AMERICAN, LLC',
   ],
   excludeETFs: true,
 };

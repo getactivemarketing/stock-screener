@@ -41,6 +41,39 @@ interface FinnhubNews {
   url: string;
 }
 
+interface FinnhubInsiderTransaction {
+  symbol: string;
+  name: string;
+  share: number;
+  change: number;
+  filingDate: string;
+  transactionDate: string;
+  transactionCode: string;
+  transactionPrice: number;
+}
+
+interface FinnhubEarnings {
+  date: string;
+  epsActual: number | null;
+  epsEstimate: number | null;
+  hour: string;
+  quarter: number;
+  revenueActual: number | null;
+  revenueEstimate: number | null;
+  symbol: string;
+  year: number;
+}
+
+interface FinnhubRecommendation {
+  buy: number;
+  hold: number;
+  period: string;
+  sell: number;
+  strongBuy: number;
+  strongSell: number;
+  symbol: string;
+}
+
 /**
  * Fetch current quote
  */
@@ -229,6 +262,56 @@ function formatDate(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
+/**
+ * Fetch insider transactions for a ticker
+ */
+export async function fetchInsiderTransactions(ticker: string): Promise<FinnhubInsiderTransaction[]> {
+  try {
+    const url = `${BASE_URL}/stock/insider-transactions?symbol=${ticker}&token=${config.finnhubApiKey}`;
+    const data = await fetchWithRetry<{ data: FinnhubInsiderTransaction[] }>(url, {}, rateLimiters.finnhub);
+    return data?.data?.slice(0, 10) || []; // Last 10 transactions
+  } catch (error) {
+    console.error(`Finnhub insider transactions failed for ${ticker}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Fetch earnings calendar for a ticker
+ */
+export async function fetchEarningsCalendar(ticker: string): Promise<FinnhubEarnings[]> {
+  try {
+    const from = new Date();
+    const to = new Date(from.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days ahead
+
+    const url = `${BASE_URL}/calendar/earnings?symbol=${ticker}&from=${formatDate(from)}&to=${formatDate(to)}&token=${config.finnhubApiKey}`;
+    const data = await fetchWithRetry<{ earningsCalendar: FinnhubEarnings[] }>(url, {}, rateLimiters.finnhub);
+    return data?.earningsCalendar || [];
+  } catch (error) {
+    console.error(`Finnhub earnings failed for ${ticker}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Fetch analyst recommendations
+ */
+export async function fetchRecommendations(ticker: string): Promise<FinnhubRecommendation | null> {
+  try {
+    const url = `${BASE_URL}/stock/recommendation?symbol=${ticker}&token=${config.finnhubApiKey}`;
+    const data = await fetchWithRetry<FinnhubRecommendation[]>(url, {}, rateLimiters.finnhub);
+    return data?.[0] || null; // Most recent recommendation
+  } catch (error) {
+    console.error(`Finnhub recommendations failed for ${ticker}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Export types for use in other modules
+ */
+export type { FinnhubNews, FinnhubInsiderTransaction, FinnhubEarnings, FinnhubRecommendation };
+
 export default {
   fetchQuote,
   fetchProfile,
@@ -237,4 +320,7 @@ export default {
   fetchNews,
   fetchFundamentalData,
   fetchPriceData,
+  fetchInsiderTransactions,
+  fetchEarningsCalendar,
+  fetchRecommendations,
 };

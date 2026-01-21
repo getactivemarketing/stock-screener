@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "pipeline": "tsx src/pipeline.ts",
-    "db:migrate": "tsx src/db/migrate.ts"
+    "db:migrate": "tsx src/db/migrate.ts",
+    "returns": "tsx src/return-tracker.ts"
   },
   "keywords": [
     "stock",
