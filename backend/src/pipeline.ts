@@ -255,6 +255,7 @@ function selectTickersWithPennyPriority(
   }
 
   return selected.slice(0, maxTickers);
+}
 
 /**
  * Enrich tickers with price and fundamental data
