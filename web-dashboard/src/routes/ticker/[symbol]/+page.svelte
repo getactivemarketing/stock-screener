@@ -71,6 +71,13 @@
     return n.toFixed(2);
   }
 
+  function formatPrice(num: number | string | null): string {
+    if (num === null || num === undefined) return '-';
+    const n = typeof num === 'string' ? parseFloat(num) : num;
+    if (isNaN(n)) return '-';
+    return n.toFixed(2);
+  }
+
   function formatPercent(num: number | string | null): string {
     if (num === null || num === undefined) return '-';
     const n = typeof num === 'string' ? parseFloat(num) : num;
@@ -177,24 +184,27 @@
 
 <!-- Target Prices -->
 {#if result.target_avg}
+  {@const targetAvg = typeof result.target_avg === 'string' ? parseFloat(result.target_avg) : result.target_avg}
+  {@const stopLoss = typeof result.stop_loss === 'string' ? parseFloat(result.stop_loss) : result.stop_loss}
+  {@const price = typeof result.price === 'string' ? parseFloat(result.price) : result.price}
   <div class="card targets-card">
     <h3>Price Targets</h3>
     <div class="targets-summary">
       <div class="target-main">
         <div class="target-label">Average Target</div>
-        <div class="target-value positive">${result.target_avg?.toFixed(2)}</div>
+        <div class="target-value positive">${formatPrice(targetAvg)}</div>
         <div class="target-upside">
-          {#if result.price && result.target_avg}
-            {((result.target_avg - result.price) / result.price * 100).toFixed(1)}% upside
+          {#if price && targetAvg}
+            {((targetAvg - price) / price * 100).toFixed(1)}% upside
           {/if}
         </div>
       </div>
       <div class="target-stop">
         <div class="target-label">Stop Loss</div>
-        <div class="target-value negative">${result.stop_loss?.toFixed(2)}</div>
+        <div class="target-value negative">${formatPrice(stopLoss)}</div>
         <div class="target-upside">
-          {#if result.price && result.stop_loss}
-            {((result.stop_loss - result.price) / result.price * 100).toFixed(1)}%
+          {#if price && stopLoss}
+            {((stopLoss - price) / price * 100).toFixed(1)}%
           {/if}
         </div>
       </div>
@@ -204,15 +214,15 @@
       <div class="target-method">
         <div class="method-header">
           <span class="method-name">Technical</span>
-          <span class="method-target">${result.target_technical?.toFixed(2) || '-'}</span>
+          <span class="method-target">${formatPrice(result.target_technical)}</span>
         </div>
         {#if result.target_details?.technical}
           <div class="method-details">
-            Support: ${result.target_details.technical.support?.toFixed(2)} |
-            Resistance: ${result.target_details.technical.resistance?.toFixed(2)}
+            Support: ${formatPrice(result.target_details.technical.support)} |
+            Resistance: ${formatPrice(result.target_details.technical.resistance)}
           </div>
           <div class="method-confidence">
-            Confidence: {(result.target_details.technical.confidence * 100).toFixed(0)}%
+            Confidence: {((result.target_details.technical.confidence || 0) * 100).toFixed(0)}%
           </div>
         {/if}
       </div>
@@ -220,15 +230,15 @@
       <div class="target-method">
         <div class="method-header">
           <span class="method-name">Fundamental</span>
-          <span class="method-target">${result.target_fundamental?.toFixed(2) || '-'}</span>
+          <span class="method-target">${formatPrice(result.target_fundamental)}</span>
         </div>
         {#if result.target_details?.fundamental}
           <div class="method-details">
-            Fair Value: ${result.target_details.fundamental.fairValue?.toFixed(2)} |
-            Sector P/E: {result.target_details.fundamental.sectorAvgPE}
+            Fair Value: ${formatPrice(result.target_details.fundamental.fairValue)} |
+            Sector P/E: {result.target_details.fundamental.sectorAvgPE || '-'}
           </div>
           <div class="method-confidence">
-            Confidence: {(result.target_details.fundamental.confidence * 100).toFixed(0)}%
+            Confidence: {((result.target_details.fundamental.confidence || 0) * 100).toFixed(0)}%
           </div>
         {/if}
       </div>
@@ -236,14 +246,14 @@
       <div class="target-method">
         <div class="method-header">
           <span class="method-name">AI Analysis</span>
-          <span class="method-target">${result.target_ai?.toFixed(2) || '-'}</span>
+          <span class="method-target">${formatPrice(result.target_ai)}</span>
         </div>
         {#if result.target_details?.ai}
           <div class="method-details">
-            {result.target_details.ai.reasoning}
+            {result.target_details.ai.reasoning || 'No reasoning available'}
           </div>
           <div class="method-confidence">
-            Confidence: {(result.target_details.ai.confidence * 100).toFixed(0)}%
+            Confidence: {((result.target_details.ai.confidence || 0) * 100).toFixed(0)}%
           </div>
         {/if}
       </div>
@@ -251,15 +261,15 @@
       <div class="target-method">
         <div class="method-header">
           <span class="method-name">Risk-Based</span>
-          <span class="method-target">${result.target_risk?.toFixed(2) || '-'}</span>
+          <span class="method-target">${formatPrice(result.target_risk)}</span>
         </div>
         {#if result.target_details?.risk}
           <div class="method-details">
-            +10%: ${result.target_details.risk.target10pct?.toFixed(2)} |
-            +20%: ${result.target_details.risk.target20pct?.toFixed(2)}
+            +10%: ${formatPrice(result.target_details.risk.target10pct)} |
+            +20%: ${formatPrice(result.target_details.risk.target20pct)}
           </div>
           <div class="method-confidence">
-            Confidence: {(result.target_details.risk.confidence * 100).toFixed(0)}%
+            Confidence: {((result.target_details.risk.confidence || 0) * 100).toFixed(0)}%
           </div>
         {/if}
       </div>
