@@ -9,6 +9,16 @@ import type {
   Classification,
 } from '../types/index.js';
 
+export interface AITargetPrice {
+  target: number;
+  reasoning: string;
+  confidence: number;
+}
+
+export interface AnalysisWithTarget extends ClassificationResult {
+  targetPrice?: AITargetPrice;
+}
+
 // Perplexity uses OpenAI-compatible API
 const perplexity = new OpenAI({
   apiKey: config.perplexityApiKey,
@@ -27,7 +37,7 @@ interface TickerContext {
 /**
  * Use Perplexity to generate detailed analysis for a ticker
  */
-export async function generateAnalysis(context: TickerContext): Promise<ClassificationResult> {
+export async function generateAnalysis(context: TickerContext): Promise<AnalysisWithTarget> {
   const prompt = buildPrompt(context);
 
   try {
@@ -48,7 +58,7 @@ export async function generateAnalysis(context: TickerContext): Promise<Classifi
     });
 
     const responseText = response.choices[0]?.message?.content || '';
-    return parseResponse(responseText, context.preliminaryClassification);
+    return parseResponse(responseText, context.preliminaryClassification, context.price.price);
   } catch (error) {
     console.error(`Perplexity analysis failed for ${context.ticker}:`, error);
     // Return a default response if Perplexity fails
@@ -107,11 +117,16 @@ Respond with ONLY a JSON object (no markdown, no explanation):
   "confidence": 0.0-1.0,
   "bullCase": "1-2 sentence bull case",
   "bearCase": "1-2 sentence bear case",
-  "catalysts": ["catalyst1", "catalyst2"]
+  "catalysts": ["catalyst1", "catalyst2"],
+  "targetPrice": {
+    "target": number (your price target in dollars),
+    "reasoning": "1-2 sentence explanation for target",
+    "confidence": 0.0-1.0
+  }
 }`;
 }
 
-function parseResponse(response: string, fallbackClassification: Classification): ClassificationResult {
+function parseResponse(response: string, fallbackClassification: Classification, currentPrice: number): AnalysisWithTarget {
   try {
     // Extract JSON from response (handle markdown code blocks if present)
     let jsonStr = response.trim();
@@ -122,12 +137,30 @@ function parseResponse(response: string, fallbackClassification: Classification)
 
     const parsed = JSON.parse(jsonStr);
 
+    // Parse target price if present
+    let targetPrice: AITargetPrice | undefined;
+    if (parsed.targetPrice && typeof parsed.targetPrice.target === 'number') {
+      targetPrice = {
+        target: Math.round(parsed.targetPrice.target * 100) / 100,
+        reasoning: typeof parsed.targetPrice.reasoning === 'string' ? parsed.targetPrice.reasoning : 'AI-generated target',
+        confidence: typeof parsed.targetPrice.confidence === 'number' ? Math.max(0, Math.min(1, parsed.targetPrice.confidence)) : 0.5,
+      };
+    } else {
+      // Default target: 15% upside
+      targetPrice = {
+        target: Math.round(currentPrice * 1.15 * 100) / 100,
+        reasoning: 'Default target based on moderate upside potential',
+        confidence: 0.4,
+      };
+    }
+
     return {
       classification: validateClassification(parsed.classification) || fallbackClassification,
       confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
       bullCase: typeof parsed.bullCase === 'string' ? parsed.bullCase : 'Analysis unavailable',
       bearCase: typeof parsed.bearCase === 'string' ? parsed.bearCase : 'Analysis unavailable',
       catalysts: Array.isArray(parsed.catalysts) ? parsed.catalysts.filter((c: unknown) => typeof c === 'string') : [],
+      targetPrice,
     };
   } catch (error) {
     console.error('Failed to parse Perplexity response:', error);
@@ -138,6 +171,11 @@ function parseResponse(response: string, fallbackClassification: Classification)
       bullCase: 'Analysis parsing failed',
       bearCase: 'Analysis parsing failed',
       catalysts: [],
+      targetPrice: {
+        target: Math.round(currentPrice * 1.15 * 100) / 100,
+        reasoning: 'Default target (analysis failed)',
+        confidence: 0.3,
+      },
     };
   }
 }

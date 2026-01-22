@@ -17,6 +17,41 @@ export async function query<T = Record<string, unknown>>(
   return result.rows as T[];
 }
 
+export interface TargetDetails {
+  technical: {
+    method: string;
+    resistance: number;
+    support: number;
+    high52w: number;
+    low52w: number;
+    target: number;
+    confidence: number;
+  };
+  fundamental: {
+    method: string;
+    currentPE: number | null;
+    sectorAvgPE: number;
+    fairValue: number;
+    target: number;
+    confidence: number;
+  };
+  ai: {
+    method: string;
+    target: number;
+    reasoning: string;
+    confidence: number;
+  };
+  risk: {
+    method: string;
+    entryPrice: number;
+    target10pct: number;
+    target20pct: number;
+    stopLoss: number;
+    target: number;
+    confidence: number;
+  };
+}
+
 export interface ScanResult {
   id: number;
   run_id: string;
@@ -41,6 +76,14 @@ export interface ScanResult {
   catalysts: string[];
   alert_triggered: boolean;
   alert_type: string;
+  // Target prices
+  target_technical: number | null;
+  target_fundamental: number | null;
+  target_ai: number | null;
+  target_risk: number | null;
+  target_avg: number | null;
+  stop_loss: number | null;
+  target_details: TargetDetails | null;
 }
 
 export interface ScanRun {

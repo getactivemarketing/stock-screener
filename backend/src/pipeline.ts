@@ -5,6 +5,7 @@ import apewisdom from './services/apewisdom.js';
 import finnhub from './services/finnhub.js';
 import scoring from './services/scoring.js';
 import classifier from './services/classifier.js';
+import { calculateTargetPrices, type TargetPrices } from './services/targets.js';
 import { fetchSwaggyTrending } from './services/swaggy.js';
 import { fetchStocktwitsTrending, fetchStocktwitsActive } from './services/stocktwits.js';
 import { fetchAllFinvizSignals } from './services/finviz.js';
@@ -355,8 +356,8 @@ function applyUniverseFilters(
  */
 async function scoreAndClassify(
   tickers: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
-): Promise<TickerAnalysis[]> {
-  const results: TickerAnalysis[] = [];
+): Promise<(TickerAnalysis & { targets: TargetPrices })[]> {
+  const results: (TickerAnalysis & { targets: TargetPrices })[] = [];
 
   for (const { sentiment, price, fundamentals } of tickers) {
     // Calculate scores
@@ -365,8 +366,9 @@ async function scoreAndClassify(
     // Get preliminary classification
     const { classification: prelimClassification, alertType, reason } = scoring.classifyTicker(scores);
 
-    // Use Claude for detailed analysis (only for interesting tickers to save API calls)
+    // Use Perplexity for detailed analysis (only for interesting tickers to save API calls)
     let classificationResult;
+    let aiTarget;
     if (alertType !== null || scores.attention > 50 || scores.momentum > 50) {
       classificationResult = await classifier.generateAnalysis({
         ticker: sentiment.ticker,
@@ -376,6 +378,7 @@ async function scoreAndClassify(
         fundamentals,
         preliminaryClassification: prelimClassification,
       });
+      aiTarget = classificationResult.targetPrice;
     } else {
       classificationResult = {
         classification: prelimClassification,
@@ -385,6 +388,9 @@ async function scoreAndClassify(
         catalysts: [],
       };
     }
+
+    // Calculate target prices using all 4 methods
+    const targets = calculateTargetPrices(price, fundamentals, scores, aiTarget);
 
     results.push({
       ticker: sentiment.ticker,
@@ -397,6 +403,7 @@ async function scoreAndClassify(
       classification: classificationResult,
       alertTriggered: alertType !== null,
       alertType,
+      targets,
     });
   }
 
@@ -406,9 +413,9 @@ async function scoreAndClassify(
 /**
  * Save results to database
  */
-async function saveResults(analyses: TickerAnalysis[]): Promise<void> {
+async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices })[]): Promise<void> {
   for (const analysis of analyses) {
-    const { ticker, sentiment, price, fundamentals, scores, classification } = analysis;
+    const { ticker, sentiment, price, fundamentals, scores, classification, targets } = analysis;
 
     await db.query(
       `INSERT INTO scan_results (
@@ -426,7 +433,9 @@ async function saveResults(analyses: TickerAnalysis[]): Promise<void> {
         exchange, sector, industry, country,
         attention_score, momentum_score, fundamentals_score, risk_score,
         classification, confidence, bull_case, bear_case, catalysts,
-        alert_triggered, alert_type
+        alert_triggered, alert_type,
+        target_technical, target_fundamental, target_ai, target_risk,
+        target_avg, stop_loss, target_details
       ) VALUES (
         $1, $2, $3,
         $4, $5, $6,
@@ -442,7 +451,9 @@ async function saveResults(analyses: TickerAnalysis[]): Promise<void> {
         $34, $35, $36, $37,
         $38, $39, $40, $41,
         $42, $43, $44, $45, $46,
-        $47, $48
+        $47, $48,
+        $49, $50, $51, $52,
+        $53, $54, $55
       )`,
       [
         analysis.runId,
@@ -493,6 +504,13 @@ async function saveResults(analyses: TickerAnalysis[]): Promise<void> {
         classification.catalysts,
         analysis.alertTriggered,
         analysis.alertType,
+        targets.technical,
+        targets.fundamental,
+        targets.ai,
+        targets.risk,
+        targets.average,
+        targets.stopLoss,
+        JSON.stringify(targets.details),
       ]
     );
   }

@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS scan_results (
   alert_triggered BOOLEAN DEFAULT FALSE,
   alert_type VARCHAR(20), -- 'runner', 'value', 'both', 'pump_warning'
 
+  -- Target prices (buy/sell recommendations)
+  target_technical DECIMAL(10,4),    -- Based on support/resistance, 52w high/low
+  target_fundamental DECIMAL(10,4),  -- Based on fair value from ratios
+  target_ai DECIMAL(10,4),           -- AI-generated target
+  target_risk DECIMAL(10,4),         -- Risk-based (+20% target)
+  target_avg DECIMAL(10,4),          -- Average of all methods
+  stop_loss DECIMAL(10,4),           -- Stop loss price
+  target_details JSONB,              -- Detailed breakdown of each method
+
   -- Future returns (populated later for backtesting)
   return_1d DECIMAL(8,4),
   return_3d DECIMAL(8,4),

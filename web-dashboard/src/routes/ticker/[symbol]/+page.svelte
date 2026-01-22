@@ -175,6 +175,98 @@
   </div>
 </div>
 
+<!-- Target Prices -->
+{#if result.target_avg}
+  <div class="card targets-card">
+    <h3>Price Targets</h3>
+    <div class="targets-summary">
+      <div class="target-main">
+        <div class="target-label">Average Target</div>
+        <div class="target-value positive">${result.target_avg?.toFixed(2)}</div>
+        <div class="target-upside">
+          {#if result.price && result.target_avg}
+            {((result.target_avg - result.price) / result.price * 100).toFixed(1)}% upside
+          {/if}
+        </div>
+      </div>
+      <div class="target-stop">
+        <div class="target-label">Stop Loss</div>
+        <div class="target-value negative">${result.stop_loss?.toFixed(2)}</div>
+        <div class="target-upside">
+          {#if result.price && result.stop_loss}
+            {((result.stop_loss - result.price) / result.price * 100).toFixed(1)}%
+          {/if}
+        </div>
+      </div>
+    </div>
+
+    <div class="targets-breakdown">
+      <div class="target-method">
+        <div class="method-header">
+          <span class="method-name">Technical</span>
+          <span class="method-target">${result.target_technical?.toFixed(2) || '-'}</span>
+        </div>
+        {#if result.target_details?.technical}
+          <div class="method-details">
+            Support: ${result.target_details.technical.support?.toFixed(2)} |
+            Resistance: ${result.target_details.technical.resistance?.toFixed(2)}
+          </div>
+          <div class="method-confidence">
+            Confidence: {(result.target_details.technical.confidence * 100).toFixed(0)}%
+          </div>
+        {/if}
+      </div>
+
+      <div class="target-method">
+        <div class="method-header">
+          <span class="method-name">Fundamental</span>
+          <span class="method-target">${result.target_fundamental?.toFixed(2) || '-'}</span>
+        </div>
+        {#if result.target_details?.fundamental}
+          <div class="method-details">
+            Fair Value: ${result.target_details.fundamental.fairValue?.toFixed(2)} |
+            Sector P/E: {result.target_details.fundamental.sectorAvgPE}
+          </div>
+          <div class="method-confidence">
+            Confidence: {(result.target_details.fundamental.confidence * 100).toFixed(0)}%
+          </div>
+        {/if}
+      </div>
+
+      <div class="target-method">
+        <div class="method-header">
+          <span class="method-name">AI Analysis</span>
+          <span class="method-target">${result.target_ai?.toFixed(2) || '-'}</span>
+        </div>
+        {#if result.target_details?.ai}
+          <div class="method-details">
+            {result.target_details.ai.reasoning}
+          </div>
+          <div class="method-confidence">
+            Confidence: {(result.target_details.ai.confidence * 100).toFixed(0)}%
+          </div>
+        {/if}
+      </div>
+
+      <div class="target-method">
+        <div class="method-header">
+          <span class="method-name">Risk-Based</span>
+          <span class="method-target">${result.target_risk?.toFixed(2) || '-'}</span>
+        </div>
+        {#if result.target_details?.risk}
+          <div class="method-details">
+            +10%: ${result.target_details.risk.target10pct?.toFixed(2)} |
+            +20%: ${result.target_details.risk.target20pct?.toFixed(2)}
+          </div>
+          <div class="method-confidence">
+            Confidence: {(result.target_details.risk.confidence * 100).toFixed(0)}%
+          </div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- Market Data Row -->
 <div class="data-grid">
   <!-- Short Interest -->
@@ -688,6 +780,97 @@
     margin-bottom: 0.75rem;
   }
 
+  /* Target Prices */
+  .targets-card {
+    margin-bottom: 1.5rem;
+  }
+
+  .targets-summary {
+    display: flex;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .target-main,
+  .target-stop {
+    text-align: center;
+  }
+
+  .target-main {
+    flex: 2;
+  }
+
+  .target-stop {
+    flex: 1;
+  }
+
+  .target-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  .target-value {
+    font-size: 2rem;
+    font-weight: 700;
+  }
+
+  .target-value.positive {
+    color: var(--green);
+  }
+
+  .target-value.negative {
+    color: var(--red);
+  }
+
+  .target-upside {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+  }
+
+  .targets-breakdown {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+  }
+
+  .target-method {
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 4px;
+  }
+
+  .method-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .method-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+  }
+
+  .method-target {
+    font-weight: 700;
+    color: var(--green);
+  }
+
+  .method-details {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+  }
+
+  .method-confidence {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+
   @media (max-width: 768px) {
     .ticker-header {
       flex-direction: column;
@@ -707,6 +890,15 @@
     }
 
     .analysis-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .targets-summary {
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .targets-breakdown {
       grid-template-columns: 1fr;
     }
   }
