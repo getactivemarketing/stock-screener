@@ -8,6 +8,7 @@ import classifier from './services/classifier.js';
 import { fetchSwaggyTrending } from './services/swaggy.js';
 import { fetchStocktwitsTrending, fetchStocktwitsActive } from './services/stocktwits.js';
 import { fetchAllFinvizSignals } from './services/finviz.js';
+import { fetchRedditPennyStocks } from './services/reddit.js';
 import { universeConfig } from './lib/config.js';
 import { sleep } from './lib/http.js';
 import type {
@@ -42,10 +43,11 @@ async function runPipeline() {
     // Step 3: Merge sentiment by ticker
     console.log('\n[2/6] Merging sentiment data by ticker...');
     const mergedSentiment = mergeSentimentByTicker(sentimentData);
-    // Limit to top 20 tickers for faster runs (remove this limit in production)
-    const MAX_TICKERS = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 20;
-    const tickers = Object.keys(mergedSentiment).slice(0, MAX_TICKERS);
-    console.log(`Unique tickers to analyze: ${tickers.length} (limited from ${Object.keys(mergedSentiment).length})`);
+
+    // Prioritize penny stocks and high-activity tickers
+    const MAX_TICKERS = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 30;
+    const tickers = selectTickersWithPennyPriority(mergedSentiment, MAX_TICKERS);
+    console.log(`Unique tickers to analyze: ${tickers.length} (selected from ${Object.keys(mergedSentiment).length})`);
 
     // Step 4: Fetch price and fundamental data (with rate limiting)
     console.log('\n[3/6] Fetching price and fundamental data...');
@@ -142,6 +144,12 @@ async function fetchAllSentimentData(): Promise<SentimentData[]> {
   }
   console.log(`    Found ${finvizData.length} entries from Finviz`);
 
+  // Reddit Penny Stock Subreddits - direct scraping
+  console.log('  - Fetching from Reddit penny stock subreddits...');
+  const redditPennyData = await fetchRedditPennyStocks();
+  results.push(...redditPennyData);
+  console.log(`    Found ${redditPennyData.length} entries from Reddit penny subs`);
+
   return results;
 }
 
@@ -195,10 +203,58 @@ function mergeSentimentByTicker(data: SentimentData[]): Record<string, MergedSen
     }
 
     m.avgSentiment = sentimentCount > 0 ? totalSentiment / sentimentCount : 0;
+
+    // Mark as penny stock if found in penny-focused sources
+    m.isPennyStock = !!(m.sources['reddit-penny'] || m.sources.apewisdom?.rank);
   }
 
   return merged;
 }
+
+/**
+ * Select tickers with priority for penny stocks
+ * Ensures a good mix of penny stocks and other trending stocks
+ */
+function selectTickersWithPennyPriority(
+  merged: Record<string, MergedSentiment>,
+  maxTickers: number
+): string[] {
+  const allTickers = Object.entries(merged);
+
+  // Separate penny stocks from others
+  const pennyStocks = allTickers
+    .filter(([_, data]) => data.isPennyStock)
+    .sort((a, b) => {
+      // Sort by mentions from reddit-penny first, then total mentions
+      const aReddit = a[1].sources['reddit-penny']?.mentions || 0;
+      const bReddit = b[1].sources['reddit-penny']?.mentions || 0;
+      if (bReddit !== aReddit) return bReddit - aReddit;
+      return b[1].totalMentions - a[1].totalMentions;
+    });
+
+  const otherStocks = allTickers
+    .filter(([_, data]) => !data.isPennyStock)
+    .sort((a, b) => b[1].totalMentions - a[1].totalMentions);
+
+  // Allocate: 60% penny stocks, 40% other trending
+  const pennySlots = Math.ceil(maxTickers * 0.6);
+  const otherSlots = maxTickers - pennySlots;
+
+  const selectedPenny = pennyStocks.slice(0, pennySlots).map(([ticker]) => ticker);
+  const selectedOther = otherStocks.slice(0, otherSlots).map(([ticker]) => ticker);
+
+  console.log(`  Selected ${selectedPenny.length} penny stocks, ${selectedOther.length} other stocks`);
+
+  // If we don't have enough penny stocks, fill with more from other
+  const selected = [...selectedPenny, ...selectedOther];
+  if (selected.length < maxTickers) {
+    const remaining = otherStocks
+      .slice(otherSlots, otherSlots + (maxTickers - selected.length))
+      .map(([ticker]) => ticker);
+    selected.push(...remaining);
+  }
+
+  return selected.slice(0, maxTickers);
 
 /**
  * Enrich tickers with price and fundamental data

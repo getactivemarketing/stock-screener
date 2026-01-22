@@ -45,6 +45,7 @@ export const rateLimiters = {
   apewisdom: new RateLimiter(2, 500),
   swaggy: new RateLimiter(1, 1000),
   altindex: new RateLimiter(1, 1000),
+  reddit: new RateLimiter(1, 2000), // Reddit rate limit: be conservative
 };
 
 export async function fetchWithRetry<T>(
