@@ -65,7 +65,7 @@ export const alertConfig = {
 
 // Universe filters
 export const universeConfig = {
-  maxPrice: Infinity, // No price limit
+  maxPrice: 20, // Focus on stocks under $20
   maxMarketCap: Infinity, // No market cap limit
   allowedCountries: ['USA', 'United States', 'US'],
   allowedExchanges: [
