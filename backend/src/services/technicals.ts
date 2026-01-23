@@ -1,5 +1,6 @@
 import { RSI, MACD, BollingerBands, SMA, EMA, OBV } from 'technicalindicators';
 import { fetchCandles } from './finnhub.js';
+import { fetchDailyTimeSeries } from './alphavantage.js';
 
 export interface CandleData {
   open: number[];
@@ -39,31 +40,60 @@ export interface TechnicalIndicators {
 }
 
 /**
- * Fetch candle data from Finnhub for technical analysis
+ * Fetch candle data from Finnhub, with Alpha Vantage fallback
  * Default: 60 days of daily candles
  */
 export async function fetchCandleData(
   ticker: string,
   daysBack: number = 60
 ): Promise<CandleData | null> {
-  const now = Math.floor(Date.now() / 1000);
-  const from = now - daysBack * 24 * 60 * 60;
+  // Try Finnhub first
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const from = now - daysBack * 24 * 60 * 60;
 
-  const candles = await fetchCandles(ticker, 'D', from, now);
+    const candles = await fetchCandles(ticker, 'D', from, now);
 
-  if (!candles || candles.s !== 'ok' || !candles.c || candles.c.length < 14) {
-    console.warn(`Insufficient candle data for ${ticker}: ${candles?.c?.length || 0} candles`);
-    return null;
+    if (candles && candles.s === 'ok' && candles.c && candles.c.length >= 14) {
+      return {
+        open: candles.o,
+        high: candles.h,
+        low: candles.l,
+        close: candles.c,
+        volume: candles.v,
+        timestamps: candles.t,
+      };
+    }
+  } catch (err) {
+    console.log(`Finnhub candles unavailable for ${ticker}, trying Alpha Vantage...`);
   }
 
-  return {
-    open: candles.o,
-    high: candles.h,
-    low: candles.l,
-    close: candles.c,
-    volume: candles.v,
-    timestamps: candles.t,
-  };
+  // Fallback to Alpha Vantage
+  console.log(`Trying Alpha Vantage fallback for ${ticker}...`);
+  try {
+    const timeSeries = await fetchDailyTimeSeries(ticker, 'compact');
+    console.log(`Alpha Vantage returned ${timeSeries.length} candles for ${ticker}`);
+
+    if (timeSeries.length >= 14) {
+      // Alpha Vantage returns newest first, reverse for chronological order
+      const sorted = [...timeSeries].reverse();
+
+      console.log(`Using Alpha Vantage data for ${ticker} technical analysis`);
+      return {
+        open: sorted.map(d => d.open),
+        high: sorted.map(d => d.high),
+        low: sorted.map(d => d.low),
+        close: sorted.map(d => d.close),
+        volume: sorted.map(d => d.volume),
+        timestamps: sorted.map(d => new Date(d.date).getTime() / 1000),
+      };
+    }
+  } catch (err) {
+    console.error(`Alpha Vantage candles also failed for ${ticker}:`, err);
+  }
+
+  console.warn(`No candle data available for ${ticker}`);
+  return null;
 }
 
 /**
