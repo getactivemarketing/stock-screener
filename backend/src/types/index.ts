@@ -192,3 +192,32 @@ export interface FinnhubProfile {
   logo: string;
   finnhubIndustry: string;
 }
+
+// Technical indicators
+export interface TechnicalIndicators {
+  ticker: string;
+  // RSI
+  rsi14: number | null;
+  rsiSignal: 'oversold' | 'overbought' | 'neutral';
+  // MACD
+  macdValue: number | null;
+  macdSignal: number | null;
+  macdHistogram: number | null;
+  macdCrossover: 'bullish' | 'bearish' | 'none';
+  // Bollinger Bands
+  bbUpper: number | null;
+  bbMiddle: number | null;
+  bbLower: number | null;
+  bbPosition: 'above' | 'below' | 'inside';
+  // Moving Averages
+  sma20: number | null;
+  sma50: number | null;
+  sma200: number | null;
+  ema20: number | null;
+  maTrend: 'bullish' | 'bearish' | 'neutral';
+  // OBV
+  obvTrend: 'accumulation' | 'distribution' | 'neutral';
+  // Overall signal
+  technicalSignal: 'bullish' | 'bearish' | 'neutral';
+  signalStrength: number; // 0-100
+}

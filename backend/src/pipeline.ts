@@ -6,6 +6,7 @@ import finnhub from './services/finnhub.js';
 import scoring from './services/scoring.js';
 import classifier from './services/classifier.js';
 import { calculateTargetPrices, type TargetPrices } from './services/targets.js';
+import technicals, { type TechnicalIndicators } from './services/technicals.js';
 import { fetchSwaggyTrending } from './services/swaggy.js';
 import { fetchStocktwitsTrending, fetchStocktwitsActive } from './services/stocktwits.js';
 import { fetchAllFinvizSignals } from './services/finviz.js';
@@ -56,16 +57,21 @@ async function runPipeline() {
     console.log(`Successfully enriched ${enrichedTickers.length} tickers`);
 
     // Step 5: Apply universe filters
-    console.log('\n[4/6] Applying universe filters...');
+    console.log('\n[4/7] Applying universe filters...');
     const filteredTickers = applyUniverseFilters(enrichedTickers);
     console.log(`Tickers after filtering: ${filteredTickers.length}`);
 
+    // Step 5.5: Calculate technical indicators
+    console.log('\n[5/7] Calculating technical indicators...');
+    const tickersWithTechnicals = await calculateTechnicalsForTickers(filteredTickers);
+    console.log(`Technical indicators calculated for ${tickersWithTechnicals.filter(t => t.technicals !== null).length} tickers`);
+
     // Step 6: Score and classify
-    console.log('\n[5/6] Scoring and classifying tickers...');
-    const analyzedTickers = await scoreAndClassify(filteredTickers);
+    console.log('\n[6/7] Scoring and classifying tickers...');
+    const analyzedTickers = await scoreAndClassify(tickersWithTechnicals);
 
     // Step 7: Save results to database
-    console.log('\n[6/6] Saving results to database...');
+    console.log('\n[7/7] Saving results to database...');
     await saveResults(analyzedTickers);
 
     // Step 8: Update run record
@@ -300,6 +306,44 @@ async function enrichTickersWithMarketData(
   return results;
 }
 
+// Type for tickers with technical indicators
+type TickerWithTechnicals = {
+  sentiment: MergedSentiment;
+  price: PriceData;
+  fundamentals: FundamentalData;
+  technicals: TechnicalIndicators | null;
+};
+
+/**
+ * Calculate technical indicators for all filtered tickers
+ */
+async function calculateTechnicalsForTickers(
+  tickers: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
+): Promise<TickerWithTechnicals[]> {
+  const results: TickerWithTechnicals[] = [];
+
+  for (const ticker of tickers) {
+    try {
+      const indicators = await technicals.calculateTechnicalIndicators(ticker.price.ticker);
+      results.push({
+        ...ticker,
+        technicals: indicators,
+      });
+    } catch (error) {
+      console.warn(`Failed to calculate technicals for ${ticker.price.ticker}:`, error);
+      results.push({
+        ...ticker,
+        technicals: null,
+      });
+    }
+
+    // Small delay between requests to avoid rate limiting
+    await sleep(500);
+  }
+
+  return results;
+}
+
 /**
  * Apply universe filters (US/OTC, price <= $10, etc.)
  */
@@ -355,13 +399,22 @@ function applyUniverseFilters(
  * Score and classify all tickers
  */
 async function scoreAndClassify(
-  tickers: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
-): Promise<(TickerAnalysis & { targets: TargetPrices })[]> {
-  const results: (TickerAnalysis & { targets: TargetPrices })[] = [];
+  tickers: TickerWithTechnicals[]
+): Promise<(TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null })[]> {
+  const results: (TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null })[] = [];
 
-  for (const { sentiment, price, fundamentals } of tickers) {
+  for (const { sentiment, price, fundamentals, technicals: tickerTechnicals } of tickers) {
     // Calculate scores
-    const scores = scoring.calculateAllScores(sentiment, price, fundamentals);
+    let scores = scoring.calculateAllScores(sentiment, price, fundamentals);
+
+    // Apply technical score modifier if available
+    if (tickerTechnicals) {
+      const techModifier = technicals.getTechnicalScoreModifier(tickerTechnicals);
+      scores = {
+        ...scores,
+        momentum: Math.max(0, Math.min(100, scores.momentum + techModifier)),
+      };
+    }
 
     // Get preliminary classification
     const { classification: prelimClassification, alertType, reason } = scoring.classifyTicker(scores);
@@ -404,6 +457,7 @@ async function scoreAndClassify(
       alertTriggered: alertType !== null,
       alertType,
       targets,
+      technicals: tickerTechnicals,
     });
   }
 
@@ -413,9 +467,9 @@ async function scoreAndClassify(
 /**
  * Save results to database
  */
-async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices })[]): Promise<void> {
+async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null })[]): Promise<void> {
   for (const analysis of analyses) {
-    const { ticker, sentiment, price, fundamentals, scores, classification, targets } = analysis;
+    const { ticker, sentiment, price, fundamentals, scores, classification, targets, technicals: tech } = analysis;
 
     await db.query(
       `INSERT INTO scan_results (
@@ -435,7 +489,11 @@ async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices }
         classification, confidence, bull_case, bear_case, catalysts,
         alert_triggered, alert_type,
         target_technical, target_fundamental, target_ai, target_risk,
-        target_avg, stop_loss, target_details
+        target_avg, stop_loss, target_details,
+        rsi_14, macd_value, macd_signal, macd_histogram,
+        bb_upper, bb_middle, bb_lower,
+        sma_20, sma_50, sma_200, ema_20,
+        technical_signal, technical_strength
       ) VALUES (
         $1, $2, $3,
         $4, $5, $6,
@@ -453,7 +511,11 @@ async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices }
         $42, $43, $44, $45, $46,
         $47, $48,
         $49, $50, $51, $52,
-        $53, $54, $55
+        $53, $54, $55,
+        $56, $57, $58, $59,
+        $60, $61, $62,
+        $63, $64, $65, $66,
+        $67, $68
       )`,
       [
         analysis.runId,
@@ -511,6 +573,20 @@ async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices }
         targets.average,
         targets.stopLoss,
         JSON.stringify(targets.details),
+        // Technical indicators
+        tech?.rsi14 ?? null,
+        tech?.macdValue ?? null,
+        tech?.macdSignal ?? null,
+        tech?.macdHistogram ?? null,
+        tech?.bbUpper ?? null,
+        tech?.bbMiddle ?? null,
+        tech?.bbLower ?? null,
+        tech?.sma20 ?? null,
+        tech?.sma50 ?? null,
+        tech?.sma200 ?? null,
+        tech?.ema20 ?? null,
+        tech?.technicalSignal ?? null,
+        tech?.signalStrength ?? null,
       ]
     );
   }

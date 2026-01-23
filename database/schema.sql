@@ -88,6 +88,41 @@ CREATE TABLE IF NOT EXISTS scan_results (
   stop_loss DECIMAL(10,4),           -- Stop loss price
   target_details JSONB,              -- Detailed breakdown of each method
 
+  -- Technical indicators
+  rsi_14 DECIMAL(5,2),
+  macd_value DECIMAL(10,4),
+  macd_signal DECIMAL(10,4),
+  macd_histogram DECIMAL(10,4),
+  bb_upper DECIMAL(10,4),
+  bb_middle DECIMAL(10,4),
+  bb_lower DECIMAL(10,4),
+  sma_20 DECIMAL(10,4),
+  sma_50 DECIMAL(10,4),
+  sma_200 DECIMAL(10,4),
+  ema_20 DECIMAL(10,4),
+  technical_signal VARCHAR(20), -- 'bullish', 'bearish', 'neutral'
+  technical_strength INT CHECK (technical_strength BETWEEN 0 AND 100),
+
+  -- SEC EDGAR data
+  sec_recent_filings INT,
+  sec_insider_buys INT,
+  sec_insider_sells INT,
+  sec_latest_8k_date DATE,
+  sec_signal VARCHAR(20), -- 'positive', 'negative', 'neutral'
+
+  -- Dark pool data
+  dark_pool_volume BIGINT,
+  dark_pool_pct DECIMAL(5,2),
+  dark_pool_signal VARCHAR(20), -- 'accumulation', 'distribution', 'neutral'
+
+  -- Enhanced options data
+  options_call_volume BIGINT,
+  options_put_volume BIGINT,
+  options_call_put_ratio DECIMAL(5,2),
+  options_unusual_activity BOOLEAN,
+  options_max_pain DECIMAL(10,2),
+  options_signal VARCHAR(20), -- 'bullish', 'bearish', 'neutral'
+
   -- Future returns (populated later for backtesting)
   return_1d DECIMAL(8,4),
   return_3d DECIMAL(8,4),
@@ -110,7 +145,20 @@ CREATE TABLE IF NOT EXISTS alerts (
   scores JSONB,
   classification JSONB,
   message TEXT,
-  sent_to TEXT[] -- ['email', 'slack']
+  sent_to TEXT[] -- ['email', 'slack', 'discord']
+);
+
+-- Alert rules configuration
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  description TEXT,
+  enabled BOOLEAN DEFAULT true,
+  alert_type VARCHAR(30) NOT NULL, -- 'classification', 'price_target', 'technical', 'sec', 'options'
+  conditions JSONB NOT NULL, -- {attention_min: 70, momentum_min: 60, classification: ['runner']}
+  channels TEXT[] NOT NULL, -- ['email', 'discord', 'slack']
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Historical price data for backtesting
@@ -125,6 +173,29 @@ CREATE TABLE IF NOT EXISTS price_history (
   volume BIGINT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT unique_ticker_date UNIQUE (ticker, date)
+);
+
+-- Classification accuracy tracking
+CREATE TABLE IF NOT EXISTS classification_accuracy (
+  id SERIAL PRIMARY KEY,
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL,
+  classification VARCHAR(20) NOT NULL,
+  total_picks INT NOT NULL DEFAULT 0,
+  winners_1d INT NOT NULL DEFAULT 0,
+  winners_3d INT NOT NULL DEFAULT 0,
+  winners_5d INT NOT NULL DEFAULT 0,
+  losers INT NOT NULL DEFAULT 0,
+  avg_return_1d DECIMAL(8,2),
+  avg_return_3d DECIMAL(8,2),
+  avg_return_5d DECIMAL(8,2),
+  avg_max_gain DECIMAL(8,2),
+  avg_max_drawdown DECIMAL(8,2),
+  win_rate_1d DECIMAL(5,2),
+  win_rate_5d DECIMAL(5,2),
+  sharpe_ratio DECIMAL(5,2),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT unique_period_classification UNIQUE (period_start, period_end, classification)
 );
 
 -- Indexes for common queries
@@ -159,3 +230,111 @@ SELECT
 FROM alerts
 GROUP BY alert_type, DATE(alert_timestamp)
 ORDER BY alert_date DESC;
+
+-- =====================================================
+-- MIGRATIONS - Add new columns to existing tables
+-- =====================================================
+
+-- Phase 1: Technical Indicators columns
+DO $$
+BEGIN
+  -- Add technical indicator columns if they don't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'rsi_14') THEN
+    ALTER TABLE scan_results ADD COLUMN rsi_14 DECIMAL(5,2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'macd_value') THEN
+    ALTER TABLE scan_results ADD COLUMN macd_value DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'macd_signal') THEN
+    ALTER TABLE scan_results ADD COLUMN macd_signal DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'macd_histogram') THEN
+    ALTER TABLE scan_results ADD COLUMN macd_histogram DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'bb_upper') THEN
+    ALTER TABLE scan_results ADD COLUMN bb_upper DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'bb_middle') THEN
+    ALTER TABLE scan_results ADD COLUMN bb_middle DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'bb_lower') THEN
+    ALTER TABLE scan_results ADD COLUMN bb_lower DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sma_20') THEN
+    ALTER TABLE scan_results ADD COLUMN sma_20 DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sma_50') THEN
+    ALTER TABLE scan_results ADD COLUMN sma_50 DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sma_200') THEN
+    ALTER TABLE scan_results ADD COLUMN sma_200 DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'ema_20') THEN
+    ALTER TABLE scan_results ADD COLUMN ema_20 DECIMAL(10,4);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'technical_signal') THEN
+    ALTER TABLE scan_results ADD COLUMN technical_signal VARCHAR(20);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'technical_strength') THEN
+    ALTER TABLE scan_results ADD COLUMN technical_strength INT CHECK (technical_strength BETWEEN 0 AND 100);
+  END IF;
+END $$;
+
+-- Index for technical signal queries
+CREATE INDEX IF NOT EXISTS idx_scan_results_technical ON scan_results(technical_signal);
+
+-- Phase 2: SEC, Dark Pool, and Options columns
+DO $$
+BEGIN
+  -- SEC EDGAR columns
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sec_recent_filings') THEN
+    ALTER TABLE scan_results ADD COLUMN sec_recent_filings INT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sec_insider_buys') THEN
+    ALTER TABLE scan_results ADD COLUMN sec_insider_buys INT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sec_insider_sells') THEN
+    ALTER TABLE scan_results ADD COLUMN sec_insider_sells INT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sec_latest_8k_date') THEN
+    ALTER TABLE scan_results ADD COLUMN sec_latest_8k_date DATE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'sec_signal') THEN
+    ALTER TABLE scan_results ADD COLUMN sec_signal VARCHAR(20);
+  END IF;
+
+  -- Dark Pool columns
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'dark_pool_volume') THEN
+    ALTER TABLE scan_results ADD COLUMN dark_pool_volume BIGINT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'dark_pool_pct') THEN
+    ALTER TABLE scan_results ADD COLUMN dark_pool_pct DECIMAL(5,2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'dark_pool_signal') THEN
+    ALTER TABLE scan_results ADD COLUMN dark_pool_signal VARCHAR(20);
+  END IF;
+
+  -- Enhanced Options columns
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'options_call_volume') THEN
+    ALTER TABLE scan_results ADD COLUMN options_call_volume BIGINT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'options_put_volume') THEN
+    ALTER TABLE scan_results ADD COLUMN options_put_volume BIGINT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'options_call_put_ratio') THEN
+    ALTER TABLE scan_results ADD COLUMN options_call_put_ratio DECIMAL(5,2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'options_unusual_activity') THEN
+    ALTER TABLE scan_results ADD COLUMN options_unusual_activity BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'options_max_pain') THEN
+    ALTER TABLE scan_results ADD COLUMN options_max_pain DECIMAL(10,2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'scan_results' AND column_name = 'options_signal') THEN
+    ALTER TABLE scan_results ADD COLUMN options_signal VARCHAR(20);
+  END IF;
+END $$;
+
+-- Index for options and SEC signals
+CREATE INDEX IF NOT EXISTS idx_scan_results_options_signal ON scan_results(options_signal);
+CREATE INDEX IF NOT EXISTS idx_scan_results_sec_signal ON scan_results(sec_signal);

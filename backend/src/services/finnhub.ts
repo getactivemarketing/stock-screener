@@ -19,7 +19,7 @@ interface FinnhubMetrics {
   };
 }
 
-interface FinnhubCandle {
+export interface FinnhubCandle {
   c: number[]; // close prices
   h: number[]; // high prices
   l: number[]; // low prices

@@ -84,6 +84,20 @@ export interface ScanResult {
   target_avg: number | null;
   stop_loss: number | null;
   target_details: TargetDetails | null;
+  // Technical indicators
+  rsi_14: number | null;
+  macd_value: number | null;
+  macd_signal: number | null;
+  macd_histogram: number | null;
+  bb_upper: number | null;
+  bb_middle: number | null;
+  bb_lower: number | null;
+  sma_20: number | null;
+  sma_50: number | null;
+  sma_200: number | null;
+  ema_20: number | null;
+  technical_signal: string | null;
+  technical_strength: number | null;
 }
 
 export interface ScanRun {

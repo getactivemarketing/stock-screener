@@ -96,6 +96,19 @@
     return `badge badge-${classification || 'watch'}`;
   }
 
+  function getTechnicalSignalClass(signal: string | null): string {
+    if (signal === 'bullish') return 'bullish';
+    if (signal === 'bearish') return 'bearish';
+    return 'neutral';
+  }
+
+  function getRsiClass(rsi: number | null): string {
+    if (rsi === null) return '';
+    if (rsi < 30) return 'oversold';
+    if (rsi > 70) return 'overbought';
+    return 'neutral';
+  }
+
   function formatDate(dateStr: string | number): string {
     const date = typeof dateStr === 'number' ? new Date(dateStr * 1000) : new Date(dateStr);
     return date.toLocaleDateString();
@@ -181,6 +194,165 @@
     <div class="score-label">Risk</div>
   </div>
 </div>
+
+<!-- Technical Indicators -->
+{#if result.technical_signal || result.rsi_14}
+  <div class="card technicals-card">
+    <h3>Technical Indicators</h3>
+
+    <!-- Overall Signal -->
+    <div class="tech-signal-banner {getTechnicalSignalClass(result.technical_signal)}">
+      <div class="signal-label">Technical Signal</div>
+      <div class="signal-value">{result.technical_signal?.toUpperCase() || 'N/A'}</div>
+      {#if result.technical_strength !== null}
+        <div class="signal-strength">Strength: {result.technical_strength}/100</div>
+      {/if}
+    </div>
+
+    <div class="technicals-grid">
+      <!-- RSI -->
+      <div class="tech-indicator">
+        <div class="indicator-header">
+          <span class="indicator-name">RSI (14)</span>
+          <span class="indicator-value {getRsiClass(result.rsi_14)}">{result.rsi_14 ?? '-'}</span>
+        </div>
+        {#if result.rsi_14 !== null}
+          <div class="rsi-gauge">
+            <div class="rsi-bar">
+              <div class="rsi-marker" style="left: {Math.min(100, Math.max(0, result.rsi_14))}%"></div>
+            </div>
+            <div class="rsi-labels">
+              <span>Oversold</span>
+              <span>Neutral</span>
+              <span>Overbought</span>
+            </div>
+          </div>
+        {/if}
+        <div class="indicator-status">
+          {#if result.rsi_14 !== null && result.rsi_14 < 30}
+            <span class="status oversold">Oversold - potential buy</span>
+          {:else if result.rsi_14 !== null && result.rsi_14 > 70}
+            <span class="status overbought">Overbought - potential sell</span>
+          {:else}
+            <span class="status neutral">Neutral</span>
+          {/if}
+        </div>
+      </div>
+
+      <!-- MACD -->
+      <div class="tech-indicator">
+        <div class="indicator-header">
+          <span class="indicator-name">MACD</span>
+          <span class="indicator-value {result.macd_histogram !== null && result.macd_histogram > 0 ? 'bullish' : result.macd_histogram !== null && result.macd_histogram < 0 ? 'bearish' : ''}">
+            {result.macd_value !== null ? formatNumber(result.macd_value) : '-'}
+          </span>
+        </div>
+        <div class="macd-details">
+          <div class="macd-row">
+            <span>Signal:</span>
+            <span>{result.macd_signal !== null ? formatNumber(result.macd_signal) : '-'}</span>
+          </div>
+          <div class="macd-row">
+            <span>Histogram:</span>
+            <span class={result.macd_histogram !== null && result.macd_histogram > 0 ? 'positive' : 'negative'}>
+              {result.macd_histogram !== null ? formatNumber(result.macd_histogram) : '-'}
+            </span>
+          </div>
+        </div>
+        <div class="indicator-status">
+          {#if result.macd_value !== null && result.macd_signal !== null}
+            {#if result.macd_value > result.macd_signal}
+              <span class="status bullish">Above signal line - bullish</span>
+            {:else}
+              <span class="status bearish">Below signal line - bearish</span>
+            {/if}
+          {:else}
+            <span class="status neutral">N/A</span>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Bollinger Bands -->
+      <div class="tech-indicator">
+        <div class="indicator-header">
+          <span class="indicator-name">Bollinger Bands</span>
+        </div>
+        <div class="bb-details">
+          <div class="bb-row">
+            <span>Upper:</span>
+            <span>${formatPrice(result.bb_upper)}</span>
+          </div>
+          <div class="bb-row">
+            <span>Middle:</span>
+            <span>${formatPrice(result.bb_middle)}</span>
+          </div>
+          <div class="bb-row">
+            <span>Lower:</span>
+            <span>${formatPrice(result.bb_lower)}</span>
+          </div>
+        </div>
+        <div class="indicator-status">
+          {#if result.bb_lower !== null && result.bb_upper !== null}
+            {@const price = typeof result.price === 'string' ? parseFloat(result.price) : result.price}
+            {@const bbLower = typeof result.bb_lower === 'string' ? parseFloat(result.bb_lower) : result.bb_lower}
+            {@const bbUpper = typeof result.bb_upper === 'string' ? parseFloat(result.bb_upper) : result.bb_upper}
+            {#if price < bbLower}
+              <span class="status oversold">Below lower band - oversold</span>
+            {:else if price > bbUpper}
+              <span class="status overbought">Above upper band - overbought</span>
+            {:else}
+              <span class="status neutral">Within bands</span>
+            {/if}
+          {:else}
+            <span class="status neutral">N/A</span>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Moving Averages -->
+      <div class="tech-indicator">
+        <div class="indicator-header">
+          <span class="indicator-name">Moving Averages</span>
+        </div>
+        <div class="ma-details">
+          <div class="ma-row">
+            <span>SMA 20:</span>
+            <span>${formatPrice(result.sma_20)}</span>
+            {#if result.sma_20 !== null}
+              {@const price = typeof result.price === 'string' ? parseFloat(result.price) : result.price}
+              {@const sma20 = typeof result.sma_20 === 'string' ? parseFloat(result.sma_20) : result.sma_20}
+              <span class={price > sma20 ? 'positive' : 'negative'}>
+                {price > sma20 ? 'Above' : 'Below'}
+              </span>
+            {/if}
+          </div>
+          <div class="ma-row">
+            <span>SMA 50:</span>
+            <span>${formatPrice(result.sma_50)}</span>
+            {#if result.sma_50 !== null}
+              {@const price = typeof result.price === 'string' ? parseFloat(result.price) : result.price}
+              {@const sma50 = typeof result.sma_50 === 'string' ? parseFloat(result.sma_50) : result.sma_50}
+              <span class={price > sma50 ? 'positive' : 'negative'}>
+                {price > sma50 ? 'Above' : 'Below'}
+              </span>
+            {/if}
+          </div>
+          <div class="ma-row">
+            <span>EMA 20:</span>
+            <span>${formatPrice(result.ema_20)}</span>
+            {#if result.ema_20 !== null}
+              {@const price = typeof result.price === 'string' ? parseFloat(result.price) : result.price}
+              {@const ema20 = typeof result.ema_20 === 'string' ? parseFloat(result.ema_20) : result.ema_20}
+              <span class={price > ema20 ? 'positive' : 'negative'}>
+                {price > ema20 ? 'Above' : 'Below'}
+              </span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Target Prices -->
 {#if result.target_avg}
@@ -881,6 +1053,196 @@
     color: var(--text-muted);
   }
 
+  /* Technical Indicators */
+  .technicals-card {
+    margin-bottom: 1.5rem;
+  }
+
+  .tech-signal-banner {
+    text-align: center;
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+  }
+
+  .tech-signal-banner.bullish {
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid var(--green);
+  }
+
+  .tech-signal-banner.bearish {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid var(--red);
+  }
+
+  .tech-signal-banner.neutral {
+    background: rgba(234, 179, 8, 0.15);
+    border: 1px solid var(--yellow);
+  }
+
+  .signal-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  .signal-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .tech-signal-banner.bullish .signal-value { color: var(--green); }
+  .tech-signal-banner.bearish .signal-value { color: var(--red); }
+  .tech-signal-banner.neutral .signal-value { color: var(--yellow); }
+
+  .signal-strength {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+  }
+
+  .technicals-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+  }
+
+  .tech-indicator {
+    padding: 1rem;
+    background: var(--bg);
+    border-radius: 8px;
+  }
+
+  .indicator-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+  }
+
+  .indicator-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+  }
+
+  .indicator-value {
+    font-weight: 700;
+    font-size: 1.25rem;
+  }
+
+  .indicator-value.oversold { color: var(--green); }
+  .indicator-value.overbought { color: var(--red); }
+  .indicator-value.bullish { color: var(--green); }
+  .indicator-value.bearish { color: var(--red); }
+
+  .rsi-gauge {
+    margin-bottom: 0.5rem;
+  }
+
+  .rsi-bar {
+    height: 8px;
+    background: linear-gradient(to right, var(--green) 0%, var(--green) 30%, var(--yellow) 30%, var(--yellow) 70%, var(--red) 70%, var(--red) 100%);
+    border-radius: 4px;
+    position: relative;
+  }
+
+  .rsi-marker {
+    position: absolute;
+    top: -4px;
+    width: 4px;
+    height: 16px;
+    background: white;
+    border-radius: 2px;
+    transform: translateX(-50%);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+  }
+
+  .rsi-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+  }
+
+  .indicator-status {
+    margin-top: 0.5rem;
+  }
+
+  .indicator-status .status {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    display: inline-block;
+  }
+
+  .status.oversold {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--green);
+  }
+
+  .status.overbought {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--red);
+  }
+
+  .status.bullish {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--green);
+  }
+
+  .status.bearish {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--red);
+  }
+
+  .status.neutral {
+    background: rgba(234, 179, 8, 0.2);
+    color: var(--yellow);
+  }
+
+  .macd-details,
+  .bb-details,
+  .ma-details {
+    margin-bottom: 0.5rem;
+  }
+
+  .macd-row,
+  .bb-row,
+  .ma-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.25rem 0;
+    font-size: 0.875rem;
+  }
+
+  .macd-row span:first-child,
+  .bb-row span:first-child,
+  .ma-row span:first-child {
+    color: var(--text-muted);
+  }
+
+  .ma-row {
+    gap: 0.5rem;
+  }
+
+  .ma-row span:last-child {
+    font-size: 0.7rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+  }
+
+  .ma-row span:last-child.positive {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--green);
+  }
+
+  .ma-row span:last-child.negative {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--red);
+  }
+
   @media (max-width: 768px) {
     .ticker-header {
       flex-direction: column;
@@ -909,6 +1271,10 @@
     }
 
     .targets-breakdown {
+      grid-template-columns: 1fr;
+    }
+
+    .technicals-grid {
       grid-template-columns: 1fr;
     }
   }

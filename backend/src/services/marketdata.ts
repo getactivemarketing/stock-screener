@@ -3,6 +3,12 @@
  * Fetches options flow, short interest, and other market data
  */
 
+import { config } from '../lib/config.js';
+import { fetchWithRetry, RateLimiter } from '../lib/http.js';
+
+// Polygon.io rate limiter (5 requests/minute for free tier)
+const polygonRateLimiter = new RateLimiter(1, 12000);
+
 export interface ShortInterestData {
   ticker: string;
   shortFloat: number; // Short % of float
@@ -17,6 +23,9 @@ export interface OptionsFlowData {
   putVolume: number;
   callPutRatio: number;
   unusualActivity: boolean;
+  maxPain: number | null;
+  impliedMove: number | null;
+  signal: 'bullish' | 'bearish' | 'neutral';
   largestTrades: Array<{
     type: 'call' | 'put';
     strike: number;
@@ -156,18 +165,154 @@ export async function fetchOptionsFlow(ticker: string): Promise<OptionsFlowData 
     // Flag unusual activity (high volume or extreme ratio)
     const unusualActivity = callPutRatio > 3 || callPutRatio < 0.33 || (callVolume + putVolume) > 10000;
 
+    // Calculate max pain (simplified - strike with most open interest)
+    const maxPain = calculateMaxPain(calls, puts);
+
+    // Get current price to calculate implied move
+    const currentPrice = result.quote?.regularMarketPrice || 0;
+    const impliedMove = calculateImpliedMove(calls, puts, currentPrice);
+
+    // Determine options signal
+    const signal = determineOptionsSignal(callPutRatio, unusualActivity, largestTrades);
+
     return {
       ticker,
       callVolume,
       putVolume,
       callPutRatio: Math.round(callPutRatio * 100) / 100,
       unusualActivity,
+      maxPain,
+      impliedMove,
+      signal,
       largestTrades: largestTrades.slice(0, 5),
     };
   } catch (error) {
     console.error(`Options flow fetch failed for ${ticker}:`, error);
     return null;
   }
+}
+
+/**
+ * Calculate max pain price (strike where option sellers profit most)
+ */
+function calculateMaxPain(calls: any[], puts: any[]): number | null {
+  if (!calls.length && !puts.length) return null;
+
+  // Get all unique strikes
+  const strikes = new Set<number>();
+  calls.forEach(c => strikes.add(c.strike));
+  puts.forEach(p => strikes.add(p.strike));
+
+  if (strikes.size === 0) return null;
+
+  // Build open interest maps
+  const callOI: Record<number, number> = {};
+  const putOI: Record<number, number> = {};
+
+  calls.forEach(c => {
+    callOI[c.strike] = (callOI[c.strike] || 0) + (c.openInterest || 0);
+  });
+
+  puts.forEach(p => {
+    putOI[p.strike] = (putOI[p.strike] || 0) + (p.openInterest || 0);
+  });
+
+  // Calculate total pain at each strike
+  let minPain = Infinity;
+  let maxPainStrike = 0;
+
+  for (const strike of strikes) {
+    let pain = 0;
+
+    // Calculate call holder losses (they lose when price < strike)
+    for (const [callStrike, oi] of Object.entries(callOI)) {
+      if (strike > Number(callStrike)) {
+        pain += (strike - Number(callStrike)) * (oi as number) * 100;
+      }
+    }
+
+    // Calculate put holder losses (they lose when price > strike)
+    for (const [putStrike, oi] of Object.entries(putOI)) {
+      if (strike < Number(putStrike)) {
+        pain += (Number(putStrike) - strike) * (oi as number) * 100;
+      }
+    }
+
+    if (pain < minPain) {
+      minPain = pain;
+      maxPainStrike = strike;
+    }
+  }
+
+  return maxPainStrike || null;
+}
+
+/**
+ * Calculate implied move from options pricing
+ */
+function calculateImpliedMove(calls: any[], puts: any[], currentPrice: number): number | null {
+  if (!currentPrice || (!calls.length && !puts.length)) return null;
+
+  // Find ATM (at-the-money) options
+  const sortedCalls = calls
+    .filter(c => c.strike && c.lastPrice)
+    .sort((a, b) => Math.abs(a.strike - currentPrice) - Math.abs(b.strike - currentPrice));
+
+  const sortedPuts = puts
+    .filter(p => p.strike && p.lastPrice)
+    .sort((a, b) => Math.abs(a.strike - currentPrice) - Math.abs(b.strike - currentPrice));
+
+  if (!sortedCalls.length || !sortedPuts.length) return null;
+
+  const atmCall = sortedCalls[0];
+  const atmPut = sortedPuts[0];
+
+  // Implied move = ATM straddle price / current price * 100
+  const straddlePrice = (atmCall.lastPrice || 0) + (atmPut.lastPrice || 0);
+  const impliedMove = (straddlePrice / currentPrice) * 100;
+
+  return Math.round(impliedMove * 100) / 100;
+}
+
+/**
+ * Determine options signal based on flow data
+ */
+function determineOptionsSignal(
+  callPutRatio: number,
+  unusualActivity: boolean,
+  largestTrades: OptionsFlowData['largestTrades']
+): 'bullish' | 'bearish' | 'neutral' {
+  // Check call/put ratio
+  let callBias = 0;
+  if (callPutRatio > 2) callBias = 2;
+  else if (callPutRatio > 1.5) callBias = 1;
+  else if (callPutRatio < 0.5) callBias = -2;
+  else if (callPutRatio < 0.67) callBias = -1;
+
+  // Check largest trades (smart money indicator)
+  let tradeBias = 0;
+  const sortedByPremium = [...largestTrades].sort((a, b) => b.premium - a.premium);
+  const top3 = sortedByPremium.slice(0, 3);
+
+  const callPremium = top3.filter(t => t.type === 'call').reduce((sum, t) => sum + t.premium, 0);
+  const putPremium = top3.filter(t => t.type === 'put').reduce((sum, t) => sum + t.premium, 0);
+
+  if (callPremium > putPremium * 2) tradeBias = 1;
+  else if (putPremium > callPremium * 2) tradeBias = -1;
+
+  // Combine signals
+  const totalBias = callBias + tradeBias;
+
+  // Only give strong signal if unusual activity detected
+  if (unusualActivity) {
+    if (totalBias >= 2) return 'bullish';
+    if (totalBias <= -2) return 'bearish';
+  } else {
+    if (totalBias >= 3) return 'bullish';
+    if (totalBias <= -3) return 'bearish';
+  }
+
+  return 'neutral';
 }
 
 /**
@@ -264,9 +409,86 @@ export async function fetchHistoricalPrices(
   }
 }
 
+/**
+ * Fetch options data from Polygon.io (optional, requires API key)
+ * More accurate than Yahoo but rate limited on free tier
+ */
+export async function fetchPolygonOptionsData(ticker: string): Promise<{
+  callVolume: number;
+  putVolume: number;
+  contracts: number;
+} | null> {
+  // Check for Polygon API key
+  const apiKey = (config as any).polygonApiKey;
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const url = `https://api.polygon.io/v3/reference/options/contracts?underlying_ticker=${ticker}&limit=100&apiKey=${apiKey}`;
+
+    const data = await fetchWithRetry<{
+      results: Array<{
+        contract_type: 'call' | 'put';
+        ticker: string;
+      }>;
+      count: number;
+    }>(url, {}, polygonRateLimiter);
+
+    if (!data?.results) {
+      return null;
+    }
+
+    const callContracts = data.results.filter(c => c.contract_type === 'call').length;
+    const putContracts = data.results.filter(c => c.contract_type === 'put').length;
+
+    return {
+      callVolume: callContracts,
+      putVolume: putContracts,
+      contracts: data.count || data.results.length,
+    };
+  } catch (error) {
+    console.warn(`Polygon options data unavailable for ${ticker}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get options flow score modifier for integration with main scoring
+ */
+export function getOptionsScoreModifier(data: OptionsFlowData | null): number {
+  if (!data) return 0;
+
+  let modifier = 0;
+
+  // Signal direction
+  if (data.signal === 'bullish') {
+    modifier += 5;
+  } else if (data.signal === 'bearish') {
+    modifier -= 5;
+  }
+
+  // Unusual activity with bullish signal is stronger
+  if (data.unusualActivity) {
+    if (data.signal === 'bullish') modifier += 3;
+    else if (data.signal === 'bearish') modifier -= 3;
+  }
+
+  // High call/put ratio
+  if (data.callPutRatio > 3) {
+    modifier += 2;
+  } else if (data.callPutRatio < 0.33) {
+    modifier -= 2;
+  }
+
+  return Math.max(-10, Math.min(10, modifier));
+}
+
 export default {
   fetchShortInterest,
   fetchOptionsFlow,
   fetchMarketData,
   fetchHistoricalPrices,
+  fetchPolygonOptionsData,
+  getOptionsScoreModifier,
 };
