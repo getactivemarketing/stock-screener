@@ -41,7 +41,7 @@ async function getPendingPicks(): Promise<PendingPick[]> {
     LIMIT 100
   `);
 
-  return result.rows;
+  return result;
 }
 
 /**
@@ -267,7 +267,7 @@ async function printWinRateSummary(): Promise<void> {
       ORDER BY classification
     `);
 
-    if (result.rows.length > 0) {
+    if (result.length > 0) {
       console.log('\nWin Rate Summary:');
       console.log('-'.repeat(80));
       console.log(
@@ -282,7 +282,7 @@ async function printWinRateSummary(): Promise<void> {
       );
       console.log('-'.repeat(80));
 
-      for (const row of result.rows) {
+      for (const row of result) {
         const winRate1d = row.total > 0 ? ((row.wins_1d / row.total) * 100).toFixed(1) : '0.0';
         const winRate5d = row.total > 0 ? ((row.wins_5d / row.total) * 100).toFixed(1) : '0.0';
 
