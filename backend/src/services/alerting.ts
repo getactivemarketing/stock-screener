@@ -2,7 +2,7 @@ import db from '../db/index.js';
 import { sendEmailAlert } from './notifications/email.js';
 import { sendDiscordAlert, sendDiscordSummary } from './notifications/discord.js';
 import { sendSlackAlert, sendSlackSummary } from './notifications/slack.js';
-import type { TickerAnalysis } from '../types/index.js';
+import type { TickerAnalysis, TradeDecision } from '../types/index.js';
 
 export interface AlertRule {
   id: number;
@@ -433,6 +433,41 @@ export async function testNotificationChannels(): Promise<{
   return { email, discord, slack };
 }
 
+/**
+ * Send enriched alerts for trade decisions (BUY/SELL only).
+ */
+export async function sendTradeAlerts(decisions: TradeDecision[]): Promise<void> {
+  const tradeActions = decisions.filter((d) => d.action === 'BUY' || d.action === 'SELL');
+  if (tradeActions.length === 0) return;
+
+  for (const trade of tradeActions) {
+    const payload: AlertPayload = {
+      ticker: trade.ticker,
+      alertType: `trade_${trade.action.toLowerCase()}`,
+      classification: trade.classification,
+      scores: trade.scores,
+      price: 0,
+      targetPrice: trade.targetPrice ?? null,
+      stopLoss: trade.stopLoss ?? null,
+      bullCase: trade.tradeRationale ?? trade.reason,
+      bearCase: trade.keyRisk ?? '',
+    };
+
+    try {
+      await sendDiscordAlert(payload);
+    } catch (e) {
+      console.error(`[Alerts] Discord trade alert failed for ${trade.ticker}:`, e);
+    }
+    try {
+      await sendSlackAlert(payload);
+    } catch (e) {
+      console.error(`[Alerts] Slack trade alert failed for ${trade.ticker}:`, e);
+    }
+  }
+
+  console.log(`[Alerts] Sent ${tradeActions.length} trade alerts`);
+}
+
 export default {
   loadAlertRules,
   processAlertsForTicker,
@@ -441,4 +476,5 @@ export default {
   updateAlertRule,
   deleteAlertRule,
   testNotificationChannels,
+  sendTradeAlerts,
 };
