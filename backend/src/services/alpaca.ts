@@ -1,8 +1,12 @@
 import { config } from '../lib/config.js';
-import { fetchWithRetry, RateLimiter } from '../lib/http.js';
+import { RateLimiter, sleep } from '../lib/http.js';
 import type { AlpacaAccount, AlpacaPosition, AlpacaOrder } from '../types/index.js';
 
 const alpacaLimiter = new RateLimiter(1, 350); // ~200 calls/min
+
+// Ring buffer of recent X-Request-IDs for Alpaca support requests
+const MAX_REQUEST_IDS = 50;
+const recentRequestIds: Array<{ timestamp: string; method: string; path: string; requestId: string; status: number }> = [];
 
 function getBaseUrl(): string {
   return config.alpacaPaper !== 'false'
@@ -26,12 +30,93 @@ export function isAlpacaConfigured(): boolean {
   return !!(config.alpacaApiKey && config.alpacaApiSecret);
 }
 
+/** Get recent Alpaca X-Request-IDs for debugging/support */
+export function getRecentRequestIds() {
+  return [...recentRequestIds];
+}
+
+/**
+ * Alpaca-specific fetch that captures X-Request-ID from response headers.
+ * Retries on 429 with exponential backoff, logs request IDs for all calls.
+ */
+async function alpacaFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+  await alpacaLimiter.acquire();
+
+  const method = options.method || 'GET';
+  const path = url.replace(getBaseUrl(), '').replace(getDataUrl(), '');
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(url, {
+        ...options,
+        headers: { ...getHeaders(), ...(options.headers as Record<string, string> || {}) },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // Capture X-Request-ID
+      const requestId = response.headers.get('X-Request-ID') || response.headers.get('x-request-id') || '';
+      if (requestId) {
+        recentRequestIds.push({
+          timestamp: new Date().toISOString(),
+          method,
+          path,
+          requestId,
+          status: response.status,
+        });
+        if (recentRequestIds.length > MAX_REQUEST_IDS) {
+          recentRequestIds.shift();
+        }
+      }
+
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        const waitMs = retryAfter ? parseInt(retryAfter) * 1000 : 1000 * (attempt + 1);
+        console.warn(`[Alpaca] Rate limited (429), retrying in ${waitMs}ms (X-Request-ID: ${requestId})`);
+        alpacaLimiter.release();
+        await sleep(waitMs);
+        await alpacaLimiter.acquire();
+        continue;
+      }
+
+      if (!response.ok) {
+        const body = await response.text();
+        alpacaLimiter.release();
+        throw new Error(`Alpaca ${method} ${path} returned ${response.status}: ${body} (X-Request-ID: ${requestId})`);
+      }
+
+      // DELETE returns no body
+      if (response.status === 204 || method === 'DELETE') {
+        alpacaLimiter.release();
+        return {} as T;
+      }
+
+      const data = await response.json() as T;
+      alpacaLimiter.release();
+      return data;
+    } catch (error) {
+      lastError = error as Error;
+      if (lastError.name === 'AbortError') {
+        lastError = new Error(`Alpaca ${method} ${path} timed out after 10s`);
+      }
+      if (attempt < 2) {
+        console.warn(`[Alpaca] Attempt ${attempt + 1} failed: ${lastError.message}`);
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+  }
+
+  alpacaLimiter.release();
+  throw lastError;
+}
+
 export async function getAccount(): Promise<AlpacaAccount> {
-  const raw = await fetchWithRetry<any>(
-    `${getBaseUrl()}/v2/account`,
-    { headers: getHeaders() },
-    alpacaLimiter
-  );
+  const raw = await alpacaFetch<any>(`${getBaseUrl()}/v2/account`);
   return {
     id: raw.id,
     equity: parseFloat(raw.equity),
@@ -44,11 +129,7 @@ export async function getAccount(): Promise<AlpacaAccount> {
 }
 
 export async function getPositions(): Promise<AlpacaPosition[]> {
-  const raw = await fetchWithRetry<any[]>(
-    `${getBaseUrl()}/v2/positions`,
-    { headers: getHeaders() },
-    alpacaLimiter
-  );
+  const raw = await alpacaFetch<any[]>(`${getBaseUrl()}/v2/positions`);
   return raw.map((p) => ({
     ticker: p.symbol,
     quantity: parseInt(p.qty),
@@ -63,11 +144,7 @@ export async function getPositions(): Promise<AlpacaPosition[]> {
 
 export async function getPosition(ticker: string): Promise<AlpacaPosition | null> {
   try {
-    const raw = await fetchWithRetry<any>(
-      `${getBaseUrl()}/v2/positions/${ticker}`,
-      { headers: getHeaders() },
-      alpacaLimiter
-    );
+    const raw = await alpacaFetch<any>(`${getBaseUrl()}/v2/positions/${ticker}`);
     return {
       ticker: raw.symbol,
       quantity: parseInt(raw.qty),
@@ -103,44 +180,27 @@ export async function placeOrder(params: PlaceOrderParams): Promise<AlpacaOrder>
     body.limit_price = params.limitPrice.toString();
   }
 
-  const raw = await fetchWithRetry<any>(
-    `${getBaseUrl()}/v2/orders`,
-    {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify(body),
-    },
-    alpacaLimiter
-  );
+  const raw = await alpacaFetch<any>(`${getBaseUrl()}/v2/orders`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
   return parseOrder(raw);
 }
 
 export async function cancelOrder(orderId: string): Promise<void> {
-  await fetchWithRetry<any>(
-    `${getBaseUrl()}/v2/orders/${orderId}`,
-    { method: 'DELETE', headers: getHeaders() },
-    alpacaLimiter
-  );
+  await alpacaFetch<any>(`${getBaseUrl()}/v2/orders/${orderId}`, { method: 'DELETE' });
 }
 
 export async function getOrders(status?: 'open' | 'closed' | 'all'): Promise<AlpacaOrder[]> {
   const params = new URLSearchParams({ limit: '50' });
   if (status) params.set('status', status);
 
-  const raw = await fetchWithRetry<any[]>(
-    `${getBaseUrl()}/v2/orders?${params}`,
-    { headers: getHeaders() },
-    alpacaLimiter
-  );
+  const raw = await alpacaFetch<any[]>(`${getBaseUrl()}/v2/orders?${params}`);
   return raw.map(parseOrder);
 }
 
 export async function getQuote(ticker: string): Promise<{ askPrice: number; bidPrice: number; lastPrice: number }> {
-  const raw = await fetchWithRetry<any>(
-    `${getDataUrl()}/v2/stocks/${ticker}/quotes/latest`,
-    { headers: getHeaders() },
-    alpacaLimiter
-  );
+  const raw = await alpacaFetch<any>(`${getDataUrl()}/v2/stocks/${ticker}/quotes/latest`);
   return {
     askPrice: raw.quote?.ap ?? 0,
     bidPrice: raw.quote?.bp ?? 0,
@@ -171,4 +231,5 @@ export default {
   cancelOrder,
   getOrders,
   getQuote,
+  getRecentRequestIds,
 };
