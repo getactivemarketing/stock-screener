@@ -23,6 +23,11 @@ const configSchema = z.object({
   sendgridApiKey: z.string().optional(),
   alertEmail: z.string().email().optional().or(z.literal('')),
 
+  // Alpaca Trading (optional)
+  alpacaApiKey: z.string().optional(),
+  alpacaApiSecret: z.string().optional(),
+  alpacaPaper: z.string().default('true'),
+
   // Runtime
   nodeEnv: z.enum(['development', 'production', 'test']).default('development'),
 });
@@ -39,6 +44,9 @@ const parsed = configSchema.safeParse({
   discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL,
   sendgridApiKey: process.env.SENDGRID_API_KEY,
   alertEmail: process.env.ALERT_EMAIL,
+  alpacaApiKey: process.env.ALPACA_API_KEY,
+  alpacaApiSecret: process.env.ALPACA_API_SECRET,
+  alpacaPaper: process.env.ALPACA_PAPER,
   nodeEnv: process.env.NODE_ENV,
 });
 

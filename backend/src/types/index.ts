@@ -221,3 +221,84 @@ export interface TechnicalIndicators {
   technicalSignal: 'bullish' | 'bearish' | 'neutral';
   signalStrength: number; // 0-100
 }
+
+// ── Trading Types ──────────────────────────────────────
+
+export interface TradingConfig {
+  enabled: boolean;
+  maxPositions: number;
+  maxPositionPct: number;
+  maxPortfolioHeatPct: number;
+  minFundamentals: number;
+  maxRisk: number;
+  minMomentum: number;
+  holdDaysMax: number;
+  highConvictionSizePct: number;
+  highConvictionMinScores: number;
+  highConvictionMaxRisk: number;
+  dailyLossLimitPct: number;
+  scanMissMax: number;
+  slippagePct: number;
+}
+
+export interface TradeDecision {
+  ticker: string;
+  action: 'BUY' | 'SELL' | 'HOLD' | 'SKIP';
+  reason: string;
+  quantity?: number;
+  positionSizePct?: number;
+  classification: string;
+  scores: Scores;
+  tradeRationale?: string;
+  keyRisk?: string;
+  stopLoss?: number;
+  targetPrice?: number;
+  scanResultId?: string;
+  configSnapshot?: TradingConfig;
+}
+
+export interface AlpacaAccount {
+  id: string;
+  equity: number;
+  cash: number;
+  buyingPower: number;
+  portfolioValue: number;
+  dayPl: number;
+  dayPlPct: number;
+}
+
+export interface AlpacaPosition {
+  ticker: string;
+  quantity: number;
+  avgEntryPrice: number;
+  marketValue: number;
+  currentPrice: number;
+  unrealizedPl: number;
+  unrealizedPlPct: number;
+  side: string;
+}
+
+export interface AlpacaOrder {
+  id: string;
+  ticker: string;
+  side: 'buy' | 'sell';
+  quantity: number;
+  type: string;
+  status: string;
+  filledAvgPrice: number | null;
+  filledAt: string | null;
+  createdAt: string;
+}
+
+export interface RiskCheckResult {
+  approved: boolean;
+  adjustedQuantity?: number;
+  reason?: string;
+}
+
+// Extended classification result with trade-enriched fields
+export interface EnrichedClassificationResult extends ClassificationResult {
+  tradeRationale?: string;
+  suggestedPositionPct?: number;
+  keyRisk?: string;
+}
