@@ -396,10 +396,233 @@ export async function calculateTargetAccuracy(): Promise<{
   };
 }
 
+export interface SimulationResult {
+  startingCapital: number;
+  finalValue: number;
+  totalReturn: number;
+  totalReturnPct: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgWinPct: number;
+  avgLossPct: number;
+  maxDrawdownPct: number;
+  slippageCost: number;
+  trades: Array<{
+    ticker: string;
+    classification: string;
+    entryPrice: number;
+    exitPrice: number;
+    returnPct: number;
+    daysHeld: number;
+    exitReason: string;
+  }>;
+}
+
+/**
+ * Simulate trading using historical scan results with return data.
+ * Applies BUY/HOLD/SELL logic retroactively.
+ *
+ * NOTE: Historical scan_results will NOT have tradeRationale/suggestedPositionPct/keyRisk
+ * since those fields are new. This is expected — enriched fields don't affect trading logic.
+ */
+export async function simulateTrading(options?: {
+  startingCapital?: number;
+  slippagePct?: number;
+  maxPositions?: number;
+  maxPositionPct?: number;
+  minFundamentals?: number;
+  maxRisk?: number;
+  minMomentum?: number;
+  holdDaysMax?: number;
+}): Promise<SimulationResult> {
+  const capital = options?.startingCapital ?? 100000;
+  const slippagePct = options?.slippagePct ?? 0.5;
+  const maxPositions = options?.maxPositions ?? 5;
+  const maxPositionPct = options?.maxPositionPct ?? 10;
+  const minFundamentals = options?.minFundamentals ?? 60;
+  const maxRisk = options?.maxRisk ?? 40;
+  const minMomentum = options?.minMomentum ?? 30;
+  const holdDaysMax = options?.holdDaysMax ?? 5;
+
+  // Get all scan results with return data, ordered by date
+  const rows = await db.query<any>(`
+    SELECT ticker, classification, run_timestamp, price,
+           attention_score, momentum_score, fundamentals_score, risk_score,
+           return_1d, return_3d, return_5d, max_gain_5d, max_drawdown_5d,
+           stop_loss, target_avg
+    FROM scan_results
+    WHERE return_1d IS NOT NULL
+    ORDER BY run_timestamp ASC
+  `);
+
+  if (rows.length === 0) {
+    return {
+      startingCapital: capital, finalValue: capital, totalReturn: 0, totalReturnPct: 0,
+      totalTrades: 0, wins: 0, losses: 0, winRate: 0, avgWinPct: 0, avgLossPct: 0,
+      maxDrawdownPct: 0, slippageCost: 0, trades: [],
+    };
+  }
+
+  // Group by run_timestamp (simulate one run at a time)
+  const runGroups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = new Date(row.run_timestamp).toISOString();
+    if (!runGroups.has(key)) runGroups.set(key, []);
+    runGroups.get(key)!.push(row);
+  }
+
+  let cash = capital;
+  let peakValue = capital;
+  let maxDrawdown = 0;
+  let totalSlippage = 0;
+  let dailyStartValue = capital;
+  let lastDate = '';
+  const openPositions: Array<{
+    ticker: string;
+    classification: string;
+    entryPrice: number;
+    quantity: number;
+    daysOpen: number;
+    stopLoss: number | null;
+  }> = [];
+  const closedTrades: SimulationResult['trades'] = [];
+
+  for (const [timestamp, scanResults] of runGroups) {
+    const currentDate = timestamp.substring(0, 10);
+
+    // Reset daily P&L tracking on new day (mirrors Alpaca behavior)
+    if (currentDate !== lastDate) {
+      const portfolioValue = cash + openPositions.reduce((s, p) => s + p.entryPrice * p.quantity, 0);
+      dailyStartValue = portfolioValue;
+      lastDate = currentDate;
+    }
+
+    const resultTickers = new Set(scanResults.map((r: any) => r.ticker));
+
+    // SELL evaluation
+    for (let i = openPositions.length - 1; i >= 0; i--) {
+      const pos = openPositions[i];
+      pos.daysOpen++;
+      const scan = scanResults.find((r: any) => r.ticker === pos.ticker);
+      let sellReason = '';
+
+      if (scan && pos.stopLoss && parseFloat(scan.price) <= pos.stopLoss) {
+        sellReason = 'stop-loss';
+      } else if (scan?.classification === 'avoid') {
+        sellReason = 'reclassified-avoid';
+      } else if (pos.daysOpen >= holdDaysMax) {
+        sellReason = 'max-hold';
+      } else if (!resultTickers.has(pos.ticker)) {
+        sellReason = 'absent-from-scan';
+      }
+
+      if (sellReason) {
+        const exitPrice = scan ? parseFloat(scan.price) : pos.entryPrice;
+        const slippage = exitPrice * (slippagePct / 100);
+        const proceeds = (exitPrice - slippage) * pos.quantity;
+        totalSlippage += slippage * pos.quantity;
+        cash += proceeds;
+
+        closedTrades.push({
+          ticker: pos.ticker,
+          classification: pos.classification,
+          entryPrice: pos.entryPrice,
+          exitPrice: exitPrice - slippage,
+          returnPct: ((exitPrice - slippage - pos.entryPrice) / pos.entryPrice) * 100,
+          daysHeld: pos.daysOpen,
+          exitReason: sellReason,
+        });
+        openPositions.splice(i, 1);
+      }
+    }
+
+    // BUY evaluation
+    for (const scan of scanResults) {
+      if (openPositions.length >= maxPositions) break;
+      if (openPositions.some((p) => p.ticker === scan.ticker)) continue;
+
+      const validClassifications = ['runner', 'value', 'both'];
+      if (!validClassifications.includes(scan.classification)) continue;
+      if (parseFloat(scan.fundamentals_score) < minFundamentals) continue;
+      if (parseFloat(scan.risk_score) > maxRisk) continue;
+      if (parseFloat(scan.momentum_score) < minMomentum) continue;
+
+      // Check daily loss limit
+      const portfolioValue = cash + openPositions.reduce((s, p) => s + p.entryPrice * p.quantity, 0);
+      const dayPl = ((portfolioValue - dailyStartValue) / dailyStartValue) * 100;
+      if (dayPl <= -5) continue;
+
+      const positionValue = portfolioValue * (maxPositionPct / 100);
+      const price = parseFloat(scan.price);
+      const slippage = price * (slippagePct / 100);
+      const buyPrice = price + slippage;
+      const quantity = Math.floor(positionValue / buyPrice);
+      if (quantity < 1) continue;
+
+      const cost = buyPrice * quantity;
+      if (cost > cash) continue;
+
+      totalSlippage += slippage * quantity;
+      cash -= cost;
+      openPositions.push({
+        ticker: scan.ticker,
+        classification: scan.classification,
+        entryPrice: buyPrice,
+        quantity,
+        daysOpen: 0,
+        stopLoss: scan.stop_loss ? parseFloat(scan.stop_loss) : null,
+      });
+    }
+
+    // Track max drawdown
+    const currentValue = cash + openPositions.reduce((s, p) => s + p.entryPrice * p.quantity, 0);
+    if (currentValue > peakValue) peakValue = currentValue;
+    const drawdown = ((peakValue - currentValue) / peakValue) * 100;
+    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+  }
+
+  // Close remaining positions at last known price (assume flat)
+  for (const pos of openPositions) {
+    closedTrades.push({
+      ticker: pos.ticker,
+      classification: pos.classification,
+      entryPrice: pos.entryPrice,
+      exitPrice: pos.entryPrice,
+      returnPct: 0,
+      daysHeld: pos.daysOpen,
+      exitReason: 'simulation-end',
+    });
+    cash += pos.entryPrice * pos.quantity;
+  }
+
+  const finalValue = cash;
+  const wins = closedTrades.filter((t) => t.returnPct > 0);
+  const losses = closedTrades.filter((t) => t.returnPct <= 0);
+
+  return {
+    startingCapital: capital,
+    finalValue,
+    totalReturn: finalValue - capital,
+    totalReturnPct: ((finalValue - capital) / capital) * 100,
+    totalTrades: closedTrades.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0,
+    avgWinPct: wins.length > 0 ? wins.reduce((s, t) => s + t.returnPct, 0) / wins.length : 0,
+    avgLossPct: losses.length > 0 ? losses.reduce((s, t) => s + t.returnPct, 0) / losses.length : 0,
+    maxDrawdownPct: maxDrawdown,
+    slippageCost: totalSlippage,
+    trades: closedTrades,
+  };
+}
+
 export default {
   calculateReturns,
   updateHistoricalReturns,
   calculateClassificationAccuracy,
   getBacktestResults,
   calculateTargetAccuracy,
+  simulateTrading,
 };
