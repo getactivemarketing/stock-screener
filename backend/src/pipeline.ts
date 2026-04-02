@@ -105,6 +105,7 @@ async function runPipeline() {
     } catch (tradingError) {
       // Trading errors should NOT crash the pipeline
       console.error('[Trading] Error (pipeline continues):', tradingError);
+      console.error('[Trading] Recent Alpaca request IDs:', alpacaService.getRecentRequestIds());
     }
 
     // Step 9: Update run record
