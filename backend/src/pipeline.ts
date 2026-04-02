@@ -13,6 +13,8 @@ import { fetchAllFinvizSignals } from './services/finviz.js';
 import { fetchRedditPennyStocks } from './services/reddit.js';
 import { universeConfig } from './lib/config.js';
 import { sleep } from './lib/http.js';
+import * as trader from './services/trader.js';
+import * as alpacaService from './services/alpaca.js';
 import type {
   SentimentData,
   MergedSentiment,
@@ -38,12 +40,12 @@ async function runPipeline() {
     await createRunRecord();
 
     // Step 2: Fetch sentiment data from aggregators
-    console.log('\n[1/6] Fetching sentiment data from aggregators...');
+    console.log('\n[1/9] Fetching sentiment data from aggregators...');
     const sentimentData = await fetchAllSentimentData();
     console.log(`Found ${sentimentData.length} tickers with sentiment data`);
 
     // Step 3: Merge sentiment by ticker
-    console.log('\n[2/6] Merging sentiment data by ticker...');
+    console.log('\n[2/9] Merging sentiment data by ticker...');
     const mergedSentiment = mergeSentimentByTicker(sentimentData);
 
     // Prioritize penny stocks and high-activity tickers
@@ -52,29 +54,60 @@ async function runPipeline() {
     console.log(`Unique tickers to analyze: ${tickers.length} (selected from ${Object.keys(mergedSentiment).length})`);
 
     // Step 4: Fetch price and fundamental data (with rate limiting)
-    console.log('\n[3/6] Fetching price and fundamental data...');
+    console.log('\n[3/9] Fetching price and fundamental data...');
     const enrichedTickers = await enrichTickersWithMarketData(tickers, mergedSentiment);
     console.log(`Successfully enriched ${enrichedTickers.length} tickers`);
 
     // Step 5: Apply universe filters
-    console.log('\n[4/7] Applying universe filters...');
+    console.log('\n[4/9] Applying universe filters...');
     const filteredTickers = applyUniverseFilters(enrichedTickers);
     console.log(`Tickers after filtering: ${filteredTickers.length}`);
 
     // Step 5.5: Calculate technical indicators
-    console.log('\n[5/7] Calculating technical indicators...');
+    console.log('\n[5/9] Calculating technical indicators...');
     const tickersWithTechnicals = await calculateTechnicalsForTickers(filteredTickers);
     console.log(`Technical indicators calculated for ${tickersWithTechnicals.filter(t => t.technicals !== null).length} tickers`);
 
     // Step 6: Score and classify
-    console.log('\n[6/7] Scoring and classifying tickers...');
+    console.log('\n[6/9] Scoring and classifying tickers...');
     const analyzedTickers = await scoreAndClassify(tickersWithTechnicals);
 
     // Step 7: Save results to database
-    console.log('\n[7/7] Saving results to database...');
+    console.log('\n[7/9] Saving results to database...');
     await saveResults(analyzedTickers);
 
-    // Step 8: Update run record
+    // Step 8: Automated Trading (if enabled)
+    try {
+      const tradingConfig = await trader.loadTradingConfig();
+      if (tradingConfig.enabled && alpacaService.isAlpacaConfigured()) {
+        console.log('\n[8/9] Running automated trading...');
+
+        // 8a. Reconcile pending orders from previous runs
+        await trader.reconcilePendingOrders();
+
+        // 8b. Evaluate and execute
+        const account = await alpacaService.getAccount();
+        const positions = await alpacaService.getPositions();
+        const decisions = await trader.evaluate(analyzedTickers, positions, account, tradingConfig);
+        const executed = await trader.execute(decisions);
+        await trader.logDecisions(executed, RUN_ID);
+        await trader.updatePortfolioState(RUN_ID, analyzedTickers);
+
+        // Summary
+        const buys = executed.filter((d) => d.action === 'BUY').length;
+        const sells = executed.filter((d) => d.action === 'SELL').length;
+        console.log(`[Trading] ${buys} buys, ${sells} sells placed`);
+      } else if (!tradingConfig.enabled) {
+        console.log('\n[Trading] Disabled in config');
+      } else {
+        console.log('\n[Trading] Alpaca not configured');
+      }
+    } catch (tradingError) {
+      // Trading errors should NOT crash the pipeline
+      console.error('[Trading] Error (pipeline continues):', tradingError);
+    }
+
+    // Step 9: Update run record
     const alertCount = analyzedTickers.filter((t) => t.alertTriggered).length;
     await updateRunRecord('completed', analyzedTickers.length, alertCount);
 
