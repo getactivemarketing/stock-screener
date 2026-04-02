@@ -1,7 +1,7 @@
 # Automated Trading Agent — Design Spec
 
 **Date:** 2026-04-02
-**Status:** Approved
+**Status:** Approved (revised with review feedback)
 **Scope:** Add automated paper trading to the stock screener pipeline via Alpaca
 
 ---
@@ -16,7 +16,9 @@ The system ships **disabled by default** — backtest validation must show a pos
 
 ## Database Schema Additions
 
-### `trades` — Audit trail for every automated decision
+### `trades` — Executed orders only (BUY/SELL)
+
+Only actual orders go here. HOLD/SKIP decisions are logged to `trade_decisions`.
 
 ```sql
 CREATE TABLE trades (
@@ -24,12 +26,13 @@ CREATE TABLE trades (
   scan_result_id UUID REFERENCES scan_results(id),
   run_id UUID,
   ticker VARCHAR(10) NOT NULL,
-  action VARCHAR(4) NOT NULL,              -- 'BUY' or 'SELL'
+  action VARCHAR(4) NOT NULL CHECK (action IN ('BUY', 'SELL')),
   quantity INT NOT NULL,
-  order_type VARCHAR(4) NOT NULL,          -- 'MKT' or 'LMT'
+  order_type VARCHAR(4) NOT NULL CHECK (order_type IN ('MKT', 'LMT')),
   limit_price DECIMAL(10,4),
   alpaca_order_id VARCHAR(64),
-  status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending/filled/partial/cancelled/rejected
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'filled', 'partial', 'cancelled', 'rejected')),
   filled_price DECIMAL(10,4),
   filled_at TIMESTAMPTZ,
   classification VARCHAR(20),
@@ -40,6 +43,7 @@ CREATE TABLE trades (
   position_size_pct DECIMAL(5,2),
   stop_loss DECIMAL(10,4),
   target_price DECIMAL(10,4),
+  config_snapshot JSONB,                   -- trading_config at time of trade (for post-hoc analysis)
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -48,6 +52,24 @@ CREATE INDEX idx_trades_ticker ON trades(ticker);
 CREATE INDEX idx_trades_run_id ON trades(run_id);
 CREATE INDEX idx_trades_status ON trades(status);
 CREATE INDEX idx_trades_created ON trades(created_at);
+```
+
+### `trade_decisions` — Lightweight log for HOLD/SKIP decisions
+
+```sql
+CREATE TABLE trade_decisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id UUID,
+  ticker VARCHAR(10) NOT NULL,
+  action VARCHAR(10) NOT NULL CHECK (action IN ('HOLD', 'SKIP')),
+  reason TEXT NOT NULL,
+  classification VARCHAR(20),
+  scores JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_trade_decisions_run_id ON trade_decisions(run_id);
+CREATE INDEX idx_trade_decisions_created ON trade_decisions(created_at);
 ```
 
 ### `portfolio_state` — Position snapshot after each pipeline run
@@ -66,7 +88,9 @@ CREATE TABLE portfolio_state (
   classification_at_entry VARCHAR(20),
   stop_loss DECIMAL(10,4),
   target_price DECIMAL(10,4),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  consecutive_scan_misses INT DEFAULT 0,   -- Tracks how many runs ticker was absent
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(run_id, ticker)                   -- Prevent double-counting
 );
 
 CREATE INDEX idx_portfolio_state_run_id ON portfolio_state(run_id);
@@ -90,6 +114,8 @@ CREATE TABLE trading_config (
   high_conviction_min_scores INT DEFAULT 60,   -- All 4 scores must exceed
   high_conviction_max_risk INT DEFAULT 30,
   daily_loss_limit_pct DECIMAL(5,2) DEFAULT 5.0,
+  scan_miss_max INT DEFAULT 3,                 -- Sell after N consecutive absent scans
+  slippage_pct DECIMAL(5,3) DEFAULT 0.500,     -- 0.5% assumed slippage for backtest
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -107,8 +133,11 @@ Direct HTTP calls to Alpaca paper trading API. No SDK dependency.
 **Environment variables** (added to `config.ts`):
 - `ALPACA_API_KEY` (optional — trading disabled if missing)
 - `ALPACA_API_SECRET` (optional — trading disabled if missing)
+- `ALPACA_PAPER` (boolean, default `true` — selects base URL)
 
-**Base URL:** `https://paper-api.alpaca.markets`
+**Base URLs:**
+- Paper: `https://paper-api.alpaca.markets`
+- Live: `https://api.alpaca.markets` (only when `ALPACA_PAPER=false`)
 
 **Functions:**
 
@@ -144,19 +173,24 @@ The core trading logic. Called after pipeline saves results.
 
 **Position sizing:**
 - Default: equal weight, `config.max_position_pct` (10%) of portfolio per ticker
-- High conviction (all 4 scores >= 60 AND risk < 30): `config.high_conviction_size_pct` (15%)
+- High conviction (all 4 scores >= `config.high_conviction_min_scores` AND risk < `config.high_conviction_max_risk`): `config.high_conviction_size_pct` (15%)
+- `suggestedPositionPct` from Perplexity is **advisory only** — logged to `trades.trade_rationale` but never used for actual sizing. All position sizing goes through risk.ts.
 - Order type: market orders (penny stocks have wide spreads — limit orders risk non-fill)
 
 **Hold criteria:**
 - Position has not hit stop-loss
 - Not reclassified to `AVOID` in latest scan
 - Days held < `config.hold_days_max` (default 5)
+- `consecutive_scan_misses < config.scan_miss_max` (default 3)
 
 **Exit criteria (SELL):**
 - Current price <= `stop_loss` from scan_results
 - Latest classification is `AVOID`
 - Days held >= `config.hold_days_max`
+- Ticker absent from scan results for `config.scan_miss_max` consecutive runs (default 3)
 - Sell entire position (no partial exits for v1)
+
+**Stop-loss granularity note:** Stop-losses are only evaluated at the next pipeline run (every 30 minutes). A penny stock can blow through a stop and recover between runs. To account for this, stop-loss levels should be set conservatively wider than you would for real-time monitoring (e.g., -15% rather than -10%). The existing `stop_loss` from `scan_results` already reflects technical-level stops — trader.ts uses these as-is but this limitation should be understood when tuning thresholds.
 
 **Output:** `TradeDecision[]`
 
@@ -176,7 +210,7 @@ interface TradeDecision {
 }
 ```
 
-Every decision (including HOLD and SKIP) is logged to the `trades` table.
+BUY/SELL decisions are logged to the `trades` table (with `config_snapshot`). HOLD/SKIP decisions are logged to `trade_decisions`.
 
 ### `backend/src/services/risk.ts` — Pre-Trade Risk Validation
 
@@ -217,6 +251,8 @@ Add three new fields to the Perplexity output schema:
 }
 ```
 
+`suggestedPositionPct` is logged for analysis but **never used for actual position sizing** — that always goes through risk.ts. This prevents the LLM from directly controlling capital allocation.
+
 Update the prompt to request these. Fallback: generate rationale from bull/bear case if Perplexity omits it.
 
 ### `backend/src/pipeline.ts` — Add Step 8
@@ -226,15 +262,21 @@ After `saveResults()` at the end of the pipeline:
 ```
 // Step 8: Automated Trading (if enabled)
 if (tradingConfig.enabled && alpacaConfigured) {
+  // 8a. Reconcile any pending orders from previous runs
+  await trader.reconcilePendingOrders(alpaca);
+
+  // 8b. Evaluate and execute
   const account = await alpaca.getAccount();
   const positions = await alpaca.getPositions();
   const decisions = await trader.evaluate(results, positions, account, tradingConfig);
   const executed = await trader.execute(decisions, alpaca);
   await trader.logDecisions(executed);
-  await trader.updatePortfolioState(run_id);
+  await trader.updatePortfolioState(run_id, results);
   await alerting.sendTradeAlerts(executed);
 }
 ```
+
+**Order fill reconciliation (8a):** Before evaluating new decisions, `reconcilePendingOrders()` polls `getOrders('open')` from Alpaca and updates the `trades` table with `filled_price`, `filled_at`, and `status` for any orders placed in previous runs. Without this step, `filled_price` and `filled_at` would always be null.
 
 If trading is disabled or Alpaca isn't configured, pipeline works exactly as before.
 
@@ -255,6 +297,7 @@ For each BUY/SELL decision, send to configured channels with:
 ```typescript
 ALPACA_API_KEY: z.string().optional(),
 ALPACA_API_SECRET: z.string().optional(),
+ALPACA_PAPER: z.string().default('true'),  // 'true' = paper-api, 'false' = live
 ```
 
 ### `backend/src/services/backtest.ts` — Trade Simulation
@@ -263,9 +306,13 @@ New function `simulateTrading(options?)`:
 - Loads historical scan_results that have return data populated
 - Applies the same trader.ts BUY/HOLD/SELL logic retroactively
 - Simulates a $100k starting portfolio
-- Calculates: total return, win rate, avg win/loss size, max drawdown, number of trades
+- Applies configurable slippage per fill (`config.slippage_pct`, default 0.5%) to avoid optimistic backtest results — penny stocks have wide spreads and market orders will not fill at exact historical prices
+- Manually tracks and resets daily P&L per simulated day (Alpaca resets `day_pl_pct` at market open; the simulation must replicate this behavior for the daily loss limit to work correctly)
+- Calculates: total return, win rate, avg win/loss size, max drawdown, number of trades, slippage impact
 - Respects the same position sizing and risk rules as live trading
 - Output used to validate edge before enabling real execution
+
+**Note on enriched classifier fields:** Historical scan_results will not have `tradeRationale`, `suggestedPositionPct`, or `keyRisk` since those fields are new. The backtest will run correctly (these fields don't affect BUY/HOLD/SELL logic — only scoring thresholds and classification matter) but the enriched fields will be empty in simulation output. This is expected, not a bug.
 
 ### `backend/src/return-tracker.ts` — No Code Changes
 
@@ -286,14 +333,17 @@ Every 30 minutes (14:00-22:00 UTC, Mon-Fri):
 6. Calculate technicals (RSI, MACD, Bollinger, SMAs)
 7. Score (4 dimensions) + Classify (Perplexity w/ enriched output) + Save
 8. Trade execution (if enabled):
-   a. Load trading_config → check enabled
-   b. Fetch Alpaca account + positions
-   c. Evaluate: BUY/HOLD/SELL for each classified ticker
-   d. Risk-check each BUY
-   e. Execute via Alpaca paper API
-   f. Log all decisions to trades table
-   g. Snapshot portfolio_state
-   h. Send enriched alerts (Slack/Discord/email)
+   a. Load trading_config -> check enabled
+   b. Reconcile pending orders from previous runs
+   c. Fetch Alpaca account + positions
+   d. Evaluate: BUY/HOLD/SELL for each classified ticker
+      - For held positions absent from scan: increment consecutive_scan_misses
+      - If consecutive_scan_misses >= config.scan_miss_max: trigger SELL
+   e. Risk-check each BUY
+   f. Execute via Alpaca paper API
+   g. Log BUY/SELL to trades table (with config_snapshot), HOLD/SKIP to trade_decisions
+   h. Snapshot portfolio_state (UPSERT by run_id + ticker)
+   i. Send enriched alerts (Slack/Discord/email)
 ```
 
 ---
@@ -301,25 +351,29 @@ Every 30 minutes (14:00-22:00 UTC, Mon-Fri):
 ## Implementation Order
 
 1. **Run return-tracker** — backfill historical returns, validate edge
-2. **Database migration** — add trades, portfolio_state, trading_config tables
-3. **alpaca.ts** — Alpaca REST client
-4. **risk.ts** — pre-trade validation
-5. **Enrich classifier.ts** — add tradeRationale, suggestedPositionPct, keyRisk
-6. **trader.ts** — decision engine (BUY/HOLD/SELL logic)
-7. **backtest.ts** — add simulateTrading() function
-8. **pipeline.ts** — wire Step 8
-9. **alerting.ts** — trade-enriched notifications
-10. **config.ts** — add Alpaca env vars
+2. **Database migration** — add trades, trade_decisions, portfolio_state, trading_config tables
+3. **config.ts** — add Alpaca env vars (`ALPACA_API_KEY`, `ALPACA_API_SECRET`, `ALPACA_PAPER`)
+4. **alpaca.ts** — Alpaca REST client (paper/live URL selection via `ALPACA_PAPER`)
+5. **risk.ts** — pre-trade validation
+6. **Enrich classifier.ts** — add tradeRationale, suggestedPositionPct (advisory only), keyRisk
+7. **trader.ts** — decision engine (BUY/HOLD/SELL logic + reconcilePendingOrders + scan-miss tracking)
+8. **backtest.ts** — add simulateTrading() with slippage and daily P&L reset
+9. **pipeline.ts** — wire Step 8 (reconcile -> evaluate -> execute -> log -> alert)
+10. **alerting.ts** — trade-enriched notifications
 
 ---
 
 ## Out of Scope (v1)
 
-- Live trading (paper only)
+- Live trading (paper only — `ALPACA_PAPER` env var is ready for v2 transition)
 - Partial position exits
 - Limit orders (market only for v1)
 - Webull integration (Alpaca only)
 - Rallies Arena cross-signal (Step 5 from original plan — manual for now)
-- Dashboard UI changes for trade history (existing portfolio page sufficient)
 - Ticker universe expansion (separate effort)
-- Real-time streaming (Alpaca websocket)
+- Real-time streaming / intraday stop-loss enforcement (Alpaca websocket — v2)
+
+## v1.5 Candidates (Near-Free Given Existing Infrastructure)
+
+- **Trade history UI tab** — trades table will have rich data immediately; a simple table on the portfolio page showing recent decisions with rationale makes the system debuggable before flipping `enabled = true`
+- **Backtest results in Analytics dashboard** — the Backtest tab is already built but empty; wiring `simulateTrading()` output to it closes the loop between "validate edge" and "flip the switch"
