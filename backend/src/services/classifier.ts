@@ -17,6 +17,9 @@ export interface AITargetPrice {
 
 export interface AnalysisWithTarget extends ClassificationResult {
   targetPrice?: AITargetPrice;
+  tradeRationale?: string;
+  suggestedPositionPct?: number;
+  keyRisk?: string;
 }
 
 // Perplexity uses OpenAI-compatible API
@@ -122,7 +125,10 @@ Respond with ONLY a JSON object (no markdown, no explanation):
     "target": number (your price target in dollars),
     "reasoning": "1-2 sentence explanation for target",
     "confidence": 0.0-1.0
-  }
+  },
+  "tradeRationale": "1-2 sentence core thesis for why this is or isn't a trade (e.g. 'High retail attention + improving fundamentals suggest short-term momentum play')",
+  "suggestedPositionPct": 0-15 (suggested portfolio allocation percentage, 0 if avoid),
+  "keyRisk": "1 sentence describing the single biggest risk to the thesis"
 }`;
 }
 
@@ -161,6 +167,15 @@ function parseResponse(response: string, fallbackClassification: Classification,
       bearCase: typeof parsed.bearCase === 'string' ? parsed.bearCase : 'Analysis unavailable',
       catalysts: Array.isArray(parsed.catalysts) ? parsed.catalysts.filter((c: unknown) => typeof c === 'string') : [],
       targetPrice,
+      tradeRationale: typeof parsed.tradeRationale === 'string'
+        ? parsed.tradeRationale
+        : typeof parsed.bullCase === 'string'
+          ? `AI assessment: ${parsed.bullCase}`
+          : undefined,
+      suggestedPositionPct: typeof parsed.suggestedPositionPct === 'number'
+        ? Math.max(0, Math.min(15, parsed.suggestedPositionPct))
+        : undefined,
+      keyRisk: typeof parsed.keyRisk === 'string' ? parsed.keyRisk : undefined,
     };
   } catch (error) {
     console.error('Failed to parse Perplexity response:', error);
