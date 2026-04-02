@@ -479,6 +479,7 @@ export async function simulateTrading(options?: {
   let totalSlippage = 0;
   let dailyStartValue = capital;
   let lastDate = '';
+  const scanMissMax = 3; // Match live trader config default
   const openPositions: Array<{
     ticker: string;
     classification: string;
@@ -486,6 +487,7 @@ export async function simulateTrading(options?: {
     quantity: number;
     daysOpen: number;
     stopLoss: number | null;
+    consecutiveScanMisses: number;
   }> = [];
   const closedTrades: SimulationResult['trades'] = [];
 
@@ -508,13 +510,20 @@ export async function simulateTrading(options?: {
       const scan = scanResults.find((r: any) => r.ticker === pos.ticker);
       let sellReason = '';
 
+      // Track scan misses
+      if (resultTickers.has(pos.ticker)) {
+        pos.consecutiveScanMisses = 0;
+      } else {
+        pos.consecutiveScanMisses++;
+      }
+
       if (scan && pos.stopLoss && parseFloat(scan.price) <= pos.stopLoss) {
         sellReason = 'stop-loss';
       } else if (scan?.classification === 'avoid') {
         sellReason = 'reclassified-avoid';
       } else if (pos.daysOpen >= holdDaysMax) {
         sellReason = 'max-hold';
-      } else if (!resultTickers.has(pos.ticker)) {
+      } else if (pos.consecutiveScanMisses >= scanMissMax) {
         sellReason = 'absent-from-scan';
       }
 
@@ -573,6 +582,7 @@ export async function simulateTrading(options?: {
         quantity,
         daysOpen: 0,
         stopLoss: scan.stop_loss ? parseFloat(scan.stop_loss) : null,
+        consecutiveScanMisses: 0,
       });
     }
 
