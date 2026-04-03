@@ -51,11 +51,52 @@
   let orderSubmitting = false;
   let orderMessage = '';
 
+  interface AITrade {
+    id: string;
+    ticker: string;
+    action: 'BUY' | 'SELL';
+    quantity: number;
+    status: string;
+    filled_price: number | null;
+    classification: string | null;
+    trade_rationale: string | null;
+    key_risk: string | null;
+    scores: any;
+    stop_loss: number | null;
+    target_price: number | null;
+    created_at: string;
+    company_name: string | null;
+    tier: string | null;
+    value_score: number | null;
+    catalyst_score: number | null;
+    emerging_industry_score: number | null;
+  }
+
+  let aiTrades: AITrade[] = [];
+  let aiTradesTotal = 0;
+  let aiTradeFilter = 'all';
+
+  async function fetchAITrades() {
+    try {
+      const params = new URLSearchParams({ limit: '50' });
+      if (aiTradeFilter !== 'all') params.set('action', aiTradeFilter);
+      const res = await fetch(`/api/trades?${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        aiTrades = data.trades || [];
+        aiTradesTotal = data.total || 0;
+      }
+    } catch (e) {
+      console.error('Failed to fetch AI trades:', e);
+    }
+  }
+
   onMount(async () => {
     await Promise.all([
       fetchAccount(),
       fetchPositions(),
       fetchOrders(),
+      fetchAITrades(),
     ]);
     loading = false;
   });
@@ -213,6 +254,9 @@
     </button>
     <button class:active={activeTab === 'trade'} on:click={() => activeTab = 'trade'}>
       Trade
+    </button>
+    <button class:active={activeTab === 'aiTrades'} on:click={() => activeTab = 'aiTrades'}>
+      AI Trades ({aiTradesTotal})
     </button>
   </div>
 
@@ -377,6 +421,61 @@
           <p class="order-message">{orderMessage}</p>
         {/if}
       </div>
+    </div>
+  {/if}
+
+  <!-- AI Trades Tab -->
+  {#if activeTab === 'aiTrades'}
+    <div class="card">
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+        <button class="filter-btn" class:active={aiTradeFilter === 'all'} on:click={() => { aiTradeFilter = 'all'; fetchAITrades(); }}>All</button>
+        <button class="filter-btn" class:active={aiTradeFilter === 'BUY'} on:click={() => { aiTradeFilter = 'BUY'; fetchAITrades(); }}>Buys</button>
+        <button class="filter-btn" class:active={aiTradeFilter === 'SELL'} on:click={() => { aiTradeFilter = 'SELL'; fetchAITrades(); }}>Sells</button>
+      </div>
+
+      {#if aiTrades.length > 0}
+        {#each aiTrades as trade}
+          <div class="ai-trade-card">
+            <div class="ai-trade-header">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="action-badge action-{trade.action.toLowerCase()}">{trade.action}</span>
+                {#if trade.tier}
+                  <span class="tier-badge tier-{trade.tier.toLowerCase()}">{trade.tier === 'MOMENTUM' ? 'M' : 'Q'}</span>
+                {/if}
+                <a href="/ticker/{trade.ticker}"><strong>{trade.ticker}</strong></a>
+                <span style="color: var(--text-muted);">{trade.quantity} shares {trade.filled_price ? `@ $${Number(trade.filled_price).toFixed(2)}` : ''}</span>
+                {#if trade.classification}
+                  <span class="badge badge-{trade.classification}">{trade.classification}</span>
+                {/if}
+                <span class="status status-{trade.status?.toLowerCase()}">{trade.status}</span>
+              </div>
+              <span style="color: var(--text-muted); font-size: 0.75rem;">{formatDate(trade.created_at)}</span>
+            </div>
+            {#if trade.trade_rationale}
+              <div class="ai-trade-body">
+                <span style="color: var(--text); font-size: 0.8rem;">{trade.trade_rationale}</span>
+                {#if trade.value_score !== null && trade.value_score !== undefined}
+                  <span style="color: var(--text-muted); font-size: 0.7rem; margin-left: 8px;">
+                    V:{trade.value_score} C:{trade.catalyst_score} E:{trade.emerging_industry_score}
+                  </span>
+                {/if}
+                {#if trade.target_price}
+                  <span style="color: var(--text-muted); font-size: 0.7rem; margin-left: 8px;">
+                    Target: ${Number(trade.target_price).toFixed(2)}
+                  </span>
+                {/if}
+                {#if trade.stop_loss}
+                  <span style="color: var(--text-muted); font-size: 0.7rem; margin-left: 8px;">
+                    Stop: ${Number(trade.stop_loss).toFixed(2)}
+                  </span>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      {:else}
+        <p class="no-data">No AI trades yet. Enable trading in config to start.</p>
+      {/if}
     </div>
   {/if}
 {/if}
@@ -635,6 +734,63 @@
     border-radius: 4px;
     text-align: center;
   }
+
+  .ai-trade-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 0.5rem;
+    overflow: hidden;
+  }
+
+  .ai-trade-header {
+    padding: 10px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-card);
+  }
+
+  .ai-trade-body {
+    padding: 8px 12px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+  }
+
+  .action-badge {
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+
+  .action-buy { background: var(--green); color: #000; }
+  .action-sell { background: var(--red); color: #fff; }
+
+  .filter-btn {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+
+  .filter-btn.active {
+    border-color: var(--blue);
+    color: var(--text);
+  }
+
+  .tier-badge {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 600;
+  }
+
+  .tier-momentum { background: var(--yellow); color: #000; }
+  .tier-quality { background: var(--blue); color: #fff; }
 
   @media (max-width: 768px) {
     .stats-grid {
