@@ -1,13 +1,22 @@
 import { query, type ScanResult, type ScanRun } from '$lib/db';
 
 export async function load() {
-  // Get latest run info (only runs with actual results)
-  const runs = await query<ScanRun>(`
+  // Get latest run info (prefer runs with 5+ tickers to skip cron misfires)
+  let runs = await query<ScanRun>(`
     SELECT * FROM scan_runs
-    WHERE status = 'completed' AND tickers_scanned > 0
+    WHERE status = 'completed' AND tickers_scanned >= 5
     ORDER BY run_timestamp DESC
     LIMIT 1
   `);
+  // Fall back to any completed run if no substantial runs exist
+  if (runs.length === 0) {
+    runs = await query<ScanRun>(`
+      SELECT * FROM scan_runs
+      WHERE status = 'completed' AND tickers_scanned > 0
+      ORDER BY run_timestamp DESC
+      LIMIT 1
+    `);
+  }
 
   const latestRun = runs[0] || null;
 
