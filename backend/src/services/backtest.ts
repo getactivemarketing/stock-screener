@@ -517,11 +517,14 @@ export async function simulateTrading(options?: {
         pos.consecutiveScanMisses++;
       }
 
+      // Tier-appropriate hold period (QUALITY holds longer)
+      const maxHold = (pos.entryPrice >= 20) ? 15 : holdDaysMax;
+
       if (scan && pos.stopLoss && parseFloat(scan.price) <= pos.stopLoss) {
         sellReason = 'stop-loss';
       } else if (scan?.classification === 'avoid') {
         sellReason = 'reclassified-avoid';
-      } else if (pos.daysOpen >= holdDaysMax) {
+      } else if (pos.daysOpen >= maxHold) {
         sellReason = 'max-hold';
       } else if (pos.consecutiveScanMisses >= scanMissMax) {
         sellReason = 'absent-from-scan';
@@ -563,8 +566,11 @@ export async function simulateTrading(options?: {
       const dayPl = ((portfolioValue - dailyStartValue) / dailyStartValue) * 100;
       if (dayPl <= -5) continue;
 
-      const positionValue = portfolioValue * (maxPositionPct / 100);
+      // Determine tier from price
       const price = parseFloat(scan.price);
+      const tier = price >= 20 ? 'QUALITY' : 'MOMENTUM';
+      const positionPct = tier === 'QUALITY' ? 12.5 : maxPositionPct;
+      const positionValue = portfolioValue * (positionPct / 100);
       const slippage = price * (slippagePct / 100);
       const buyPrice = price + slippage;
       const quantity = Math.floor(positionValue / buyPrice);
