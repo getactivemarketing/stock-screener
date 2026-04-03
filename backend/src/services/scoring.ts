@@ -5,6 +5,8 @@ import type {
   Scores,
   Classification,
   ClassificationResult,
+  ClassifierEnrichment,
+  Tier,
 } from '../types/index.js';
 import { alertConfig } from '../lib/config.js';
 
@@ -79,10 +81,108 @@ export function calculateMomentumScore(price: PriceData): number {
   return Math.round(Math.max(0, Math.min(100, total)));
 }
 
+// Sector forward P/E medians (hardcoded v1)
+const SECTOR_PE_MEDIANS: Record<string, number> = {
+  'Technology': 28,
+  'Biotech': 35,
+  'Life Sciences': 35,
+  'Biotechnology': 35,
+  'Energy': 12,
+  'Industrials': 18,
+  'Healthcare': 22,
+  'Financials': 14,
+  'Financial Services': 14,
+  'Consumer Discretionary': 22,
+  'Consumer Cyclical': 22,
+  'Consumer Staples': 20,
+  'Consumer Defensive': 20,
+  'Utilities': 16,
+  'Real Estate': 18,
+  'Materials': 15,
+  'Basic Materials': 15,
+  'Communication Services': 20,
+};
+const DEFAULT_PE_MEDIAN = 20;
+
+function getSectorMedianPE(sector: string): number {
+  if (SECTOR_PE_MEDIANS[sector]) return SECTOR_PE_MEDIANS[sector];
+  const key = Object.keys(SECTOR_PE_MEDIANS).find(k =>
+    sector.toLowerCase().includes(k.toLowerCase()) || k.toLowerCase().includes(sector.toLowerCase())
+  );
+  return key ? SECTOR_PE_MEDIANS[key] : DEFAULT_PE_MEDIAN;
+}
+
+/**
+ * QUALITY tier fundamentals score (0-100)
+ * 30% analyst target distance, 30% relative P/E, 20% earnings beat rate, 20% margins/debt/growth
+ */
+function computeQualityFundamentals(
+  price: number,
+  fundamentals: FundamentalData,
+  enrichment?: ClassifierEnrichment
+): number {
+  let score = 0;
+
+  // 1. Price-to-analyst-target distance (0-30 points)
+  const meanTarget = enrichment?.analystRatings?.meanTarget;
+  if (meanTarget && meanTarget > 0 && price > 0) {
+    const impliedUpside = (meanTarget - price) / price;
+    score += Math.round(Math.max(0, Math.min(30, (impliedUpside / 0.25) * 30)));
+  }
+
+  // 2. Forward P/E vs sector median (0-30 points)
+  if (fundamentals.peRatio !== null && fundamentals.peRatio > 0) {
+    const sectorMedian = getSectorMedianPE(fundamentals.sector || '');
+    const ratio = fundamentals.peRatio / sectorMedian;
+    if (ratio <= 0.7) {
+      score += 30;
+    } else if (ratio <= 1.3) {
+      score += Math.round(30 - ((ratio - 0.7) / 0.6) * 30);
+    }
+  }
+
+  // 3. Earnings beat rate (0-20 points)
+  const beatRate = enrichment?.earnings?.earningsBeatRate;
+  if (beatRate !== null && beatRate !== undefined) {
+    score += Math.round((beatRate / 100) * 20);
+  } else {
+    score += 10; // Neutral when no data
+  }
+
+  // 4. Existing checks scaled to 20 points (0-20)
+  let legacyScore = 0;
+  if (fundamentals.grossMargin !== null) {
+    if (fundamentals.grossMargin > 50) legacyScore += 4;
+    else if (fundamentals.grossMargin > 30) legacyScore += 2;
+  }
+  if (fundamentals.operatingMargin !== null) {
+    if (fundamentals.operatingMargin > 20) legacyScore += 4;
+    else if (fundamentals.operatingMargin > 0) legacyScore += 2;
+    else legacyScore -= 2;
+  }
+  if (fundamentals.debtEquity !== null) {
+    if (fundamentals.debtEquity < 0.3) legacyScore += 4;
+    else if (fundamentals.debtEquity > 2) legacyScore -= 4;
+    else if (fundamentals.debtEquity > 1) legacyScore -= 2;
+  }
+  if (fundamentals.revenueGrowth !== null) {
+    if (fundamentals.revenueGrowth > 50) legacyScore += 6;
+    else if (fundamentals.revenueGrowth > 20) legacyScore += 4;
+    else if (fundamentals.revenueGrowth > 0) legacyScore += 2;
+    else if (fundamentals.revenueGrowth < -20) legacyScore -= 4;
+  }
+  if (['NYSE', 'NASDAQ'].some(e => fundamentals.exchange?.includes(e))) {
+    legacyScore += 2;
+  }
+  score += Math.max(0, Math.min(20, legacyScore + 10));
+
+  return Math.round(Math.max(0, Math.min(100, score)));
+}
+
 /**
  * Calculate fundamentals score (0-100) based on company metrics
  */
-export function calculateFundamentalsScore(fundamentals: FundamentalData): number {
+function computeMomentumFundamentals(fundamentals: FundamentalData): number {
   let score = 50; // Neutral starting point
 
   // Market cap tier - larger = more established
@@ -135,6 +235,21 @@ export function calculateFundamentalsScore(fundamentals: FundamentalData): numbe
   }
 
   return Math.round(Math.max(0, Math.min(100, score)));
+}
+
+/**
+ * Calculate fundamentals score (0-100) — tier-aware
+ */
+export function calculateFundamentalsScore(
+  fundamentals: FundamentalData,
+  tier?: Tier,
+  price?: number,
+  enrichment?: ClassifierEnrichment
+): number {
+  if (tier === 'QUALITY' && price) {
+    return computeQualityFundamentals(price, fundamentals, enrichment);
+  }
+  return computeMomentumFundamentals(fundamentals);
 }
 
 /**
@@ -203,11 +318,13 @@ export function calculateRiskScore(
 export function calculateAllScores(
   sentiment: MergedSentiment,
   price: PriceData,
-  fundamentals: FundamentalData
+  fundamentals: FundamentalData,
+  tier?: Tier,
+  enrichment?: ClassifierEnrichment
 ): Scores {
   const attention = calculateAttentionScore(sentiment);
   const momentum = calculateMomentumScore(price);
-  const fundamentalsScore = calculateFundamentalsScore(fundamentals);
+  const fundamentalsScore = calculateFundamentalsScore(fundamentals, tier, price.price, enrichment);
   const risk = calculateRiskScore(sentiment, price, fundamentals, attention, fundamentalsScore);
 
   return {
