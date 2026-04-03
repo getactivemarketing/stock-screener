@@ -98,6 +98,25 @@ export interface ScanResult {
   ema_20: number | null;
   technical_signal: string | null;
   technical_strength: number | null;
+  // Dual-tier fields
+  tier: string | null;
+  value_score: number | null;
+  catalyst_score: number | null;
+  emerging_industry_score: number | null;
+  thesis: string | null;
+  edge_why_now: string | null;
+  industry_theme: string | null;
+  stop_loss_pct: number | null;
+  expected_returns: any | null;
+  analyst_mean_target: number | null;
+  analyst_summary: string | null;
+  earnings_date: string | null;
+  days_to_earnings: number | null;
+  earnings_beat_rate: number | null;
+  news_headlines: string[] | null;
+  // Trade-enriched classifier fields
+  trade_rationale: string | null;
+  key_risk: string | null;
 }
 
 export interface ScanRun {
@@ -107,4 +126,36 @@ export interface ScanRun {
   alerts_generated: number;
   status: string;
   duration_ms: number;
+  momentum_count: number | null;
+  quality_count: number | null;
+}
+
+export interface TradeRecord {
+  id: string;
+  scan_result_id: number | null;
+  run_id: string;
+  ticker: string;
+  action: 'BUY' | 'SELL';
+  quantity: number;
+  order_type: string;
+  alpaca_order_id: string | null;
+  status: string;
+  filled_price: number | null;
+  filled_at: string | null;
+  classification: string | null;
+  confidence: number | null;
+  scores: { attention: number; momentum: number; fundamentals: number; risk: number } | null;
+  trade_rationale: string | null;
+  key_risk: string | null;
+  position_size_pct: number | null;
+  stop_loss: number | null;
+  target_price: number | null;
+  config_snapshot: any | null;
+  created_at: string;
+  updated_at: string;
+  company_name?: string;
+  tier?: string;
+  value_score?: number;
+  catalyst_score?: number;
+  emerging_industry_score?: number;
 }
