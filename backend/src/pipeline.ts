@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from './db/index.js';
 import apewisdom from './services/apewisdom.js';
 import finnhub from './services/finnhub.js';
+import { enrichForClassifier } from './services/finnhub.js';
 import scoring from './services/scoring.js';
 import classifier from './services/classifier.js';
 import { calculateTargetPrices, type TargetPrices } from './services/targets.js';
@@ -21,6 +22,9 @@ import type {
   PriceData,
   FundamentalData,
   TickerAnalysis,
+  Tier,
+  ClassifierEnrichment,
+  DualTierClassificationResult,
 } from './types/index.js';
 
 const RUN_ID = uuidv4();
@@ -48,29 +52,39 @@ async function runPipeline() {
     console.log('\n[2/9] Merging sentiment data by ticker...');
     const mergedSentiment = mergeSentimentByTicker(sentimentData);
 
-    // Prioritize penny stocks and high-activity tickers
+    // Dual-tier dynamic selection
     const MAX_TICKERS = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 30;
-    const tickers = selectTickersWithPennyPriority(mergedSentiment, MAX_TICKERS);
-    console.log(`Unique tickers to analyze: ${tickers.length} (selected from ${Object.keys(mergedSentiment).length})`);
+    const tieredTickers = selectTickersWithDualTier(mergedSentiment, MAX_TICKERS);
+    console.log(`Unique tickers to analyze: ${tieredTickers.length} (selected from ${Object.keys(mergedSentiment).length})`);
 
     // Step 4: Fetch price and fundamental data (with rate limiting)
     console.log('\n[3/9] Fetching price and fundamental data...');
-    const enrichedTickers = await enrichTickersWithMarketData(tickers, mergedSentiment);
+    const enrichedTickers = await enrichTickersWithMarketDataTiered(tieredTickers);
     console.log(`Successfully enriched ${enrichedTickers.length} tickers`);
+
+    // Step 4.5: Validate QUALITY tier assignments
+    console.log('\n[3.5/9] Validating QUALITY tier assignments...');
+    const validatedTickers = validateQualityTickers(enrichedTickers);
+    console.log(`Tickers after QUALITY validation: ${validatedTickers.length}`);
 
     // Step 5: Apply universe filters
     console.log('\n[4/9] Applying universe filters...');
-    const filteredTickers = applyUniverseFilters(enrichedTickers);
+    const filteredTickers = applyUniverseFiltersTiered(validatedTickers);
     console.log(`Tickers after filtering: ${filteredTickers.length}`);
 
     // Step 5.5: Calculate technical indicators
     console.log('\n[5/9] Calculating technical indicators...');
-    const tickersWithTechnicals = await calculateTechnicalsForTickers(filteredTickers);
+    const tickersWithTechnicals = await calculateTechnicalsForTickersTiered(filteredTickers);
     console.log(`Technical indicators calculated for ${tickersWithTechnicals.filter(t => t.technicals !== null).length} tickers`);
+
+    // Step 6.5: Classifier enrichment (analyst ratings, earnings, news)
+    console.log('\n[5.5/9] Fetching classifier enrichment data...');
+    const tickersWithEnrichment = await fetchClassifierEnrichment(tickersWithTechnicals);
+    console.log(`Classifier enrichment fetched for ${tickersWithEnrichment.filter(t => t.enrichment !== undefined).length} tickers`);
 
     // Step 6: Score and classify
     console.log('\n[6/9] Scoring and classifying tickers...');
-    const analyzedTickers = await scoreAndClassify(tickersWithTechnicals);
+    const analyzedTickers = await scoreAndClassify(tickersWithEnrichment);
 
     // Step 7: Save results to database
     console.log('\n[7/9] Saving results to database...');
@@ -110,7 +124,9 @@ async function runPipeline() {
 
     // Step 9: Update run record
     const alertCount = analyzedTickers.filter((t) => t.alertTriggered).length;
-    await updateRunRecord('completed', analyzedTickers.length, alertCount);
+    const momentumCount = analyzedTickers.filter(t => t.tier === 'MOMENTUM').length;
+    const qualityCount = analyzedTickers.filter(t => t.tier === 'QUALITY').length;
+    await updateRunRecord('completed', analyzedTickers.length, alertCount, undefined, momentumCount, qualityCount);
 
     // Summary
     printSummary(analyzedTickers);
@@ -253,73 +269,166 @@ function mergeSentimentByTicker(data: SentimentData[]): Record<string, MergedSen
 }
 
 /**
- * Select tickers with priority for penny stocks
- * Ensures a good mix of penny stocks and other trending stocks
+ * Ticker with its assigned tier and sentiment data
  */
-function selectTickersWithPennyPriority(
+interface TieredTicker {
+  ticker: string;
+  tier: Tier;
+  sentiment: MergedSentiment;
+}
+
+/**
+ * Select tickers using dual-tier dynamic selection.
+ * MOMENTUM: penny stocks with high social attention (isPennyStock + attention >= 40)
+ * QUALITY: non-penny stocks with strong fundamentals composite
+ * Caps: 25 per tier, 40 combined. Soft floors: 10 MOMENTUM, 5 QUALITY.
+ */
+function selectTickersWithDualTier(
   merged: Record<string, MergedSentiment>,
   maxTickers: number
-): string[] {
+): TieredTicker[] {
+  const TIER_CAP = 25;
+  const COMBINED_CAP = Math.min(maxTickers, 40);
+  const MOMENTUM_FLOOR = 10;
+  const QUALITY_FLOOR = 5;
+
   const allTickers = Object.entries(merged);
 
-  // Separate penny stocks from others
-  const pennyStocks = allTickers
-    .filter(([_, data]) => data.isPennyStock)
+  // Classify into MOMENTUM candidates: penny stocks with attention >= 40
+  const momentumCandidates = allTickers
+    .filter(([_, data]) => data.isPennyStock && data.avgSentiment >= 40)
     .sort((a, b) => {
-      // Sort by mentions from reddit-penny first, then total mentions
       const aReddit = a[1].sources['reddit-penny']?.mentions || 0;
       const bReddit = b[1].sources['reddit-penny']?.mentions || 0;
       if (bReddit !== aReddit) return bReddit - aReddit;
       return b[1].totalMentions - a[1].totalMentions;
     });
 
-  const otherStocks = allTickers
+  // QUALITY candidates: non-penny stocks, sorted by fundamentals proxy
+  // Use sourceCount + totalMentions as composite proxy (more sources = more institutional visibility)
+  const qualityCandidates = allTickers
     .filter(([_, data]) => !data.isPennyStock)
+    .sort((a, b) => {
+      // Higher source count first, then total mentions
+      if (b[1].sourceCount !== a[1].sourceCount) return b[1].sourceCount - a[1].sourceCount;
+      return b[1].totalMentions - a[1].totalMentions;
+    });
+
+  // Also include penny stocks that didn't qualify for MOMENTUM (attention < 40)
+  // as additional MOMENTUM candidates at lower priority
+  const fallbackMomentum = allTickers
+    .filter(([_, data]) => data.isPennyStock && data.avgSentiment < 40)
     .sort((a, b) => b[1].totalMentions - a[1].totalMentions);
 
-  // Allocate: 60% penny stocks, 40% other trending
-  const pennySlots = Math.ceil(maxTickers * 0.6);
-  const otherSlots = maxTickers - pennySlots;
+  // Select with soft floors and caps
+  let selectedMomentum = momentumCandidates.slice(0, TIER_CAP).map(([ticker, data]): TieredTicker => ({
+    ticker,
+    tier: 'MOMENTUM',
+    sentiment: data,
+  }));
 
-  const selectedPenny = pennyStocks.slice(0, pennySlots).map(([ticker]) => ticker);
-  const selectedOther = otherStocks.slice(0, otherSlots).map(([ticker]) => ticker);
+  let selectedQuality = qualityCandidates.slice(0, TIER_CAP).map(([ticker, data]): TieredTicker => ({
+    ticker,
+    tier: 'QUALITY',
+    sentiment: data,
+  }));
 
-  console.log(`  Selected ${selectedPenny.length} penny stocks, ${selectedOther.length} other stocks`);
+  // If MOMENTUM can't hit floor, backfill from QUALITY
+  if (selectedMomentum.length < MOMENTUM_FLOOR) {
+    const backfillCount = MOMENTUM_FLOOR - selectedMomentum.length;
+    // Add fallback momentum candidates first
+    const fallbackSelected = fallbackMomentum.slice(0, backfillCount).map(([ticker, data]): TieredTicker => ({
+      ticker,
+      tier: 'MOMENTUM',
+      sentiment: data,
+    }));
+    selectedMomentum.push(...fallbackSelected);
 
-  // If we don't have enough penny stocks, fill with more from other
-  const selected = [...selectedPenny, ...selectedOther];
-  if (selected.length < maxTickers) {
-    const remaining = otherStocks
-      .slice(otherSlots, otherSlots + (maxTickers - selected.length))
-      .map(([ticker]) => ticker);
-    selected.push(...remaining);
+    // If still short, take extras from quality pool
+    if (selectedMomentum.length < MOMENTUM_FLOOR) {
+      const extraNeeded = MOMENTUM_FLOOR - selectedMomentum.length;
+      const extraQuality = qualityCandidates
+        .slice(TIER_CAP, TIER_CAP + extraNeeded)
+        .map(([ticker, data]): TieredTicker => ({
+          ticker,
+          tier: 'QUALITY',
+          sentiment: data,
+        }));
+      selectedQuality.push(...extraQuality);
+    }
   }
 
-  return selected.slice(0, maxTickers);
+  // If QUALITY can't hit floor, backfill from MOMENTUM
+  if (selectedQuality.length < QUALITY_FLOOR) {
+    const backfillCount = QUALITY_FLOOR - selectedQuality.length;
+    const extraMomentum = momentumCandidates
+      .slice(selectedMomentum.length, selectedMomentum.length + backfillCount)
+      .map(([ticker, data]): TieredTicker => ({
+        ticker,
+        tier: 'MOMENTUM',
+        sentiment: data,
+      }));
+    selectedMomentum.push(...extraMomentum);
+  }
+
+  // Combine and cap
+  const combined = [...selectedMomentum, ...selectedQuality].slice(0, COMBINED_CAP);
+
+  const mCount = combined.filter(t => t.tier === 'MOMENTUM').length;
+  const qCount = combined.filter(t => t.tier === 'QUALITY').length;
+  console.log(`  Selected ${mCount} MOMENTUM tickers, ${qCount} QUALITY tickers (${combined.length} total)`);
+
+  return combined;
 }
 
 /**
- * Enrich tickers with price and fundamental data
+ * Validate QUALITY tier candidates after market data enrichment.
+ * QUALITY tickers must have price $20-$100, market cap > $500M, avg volume > 750K.
+ * Those that don't meet criteria are reclassified to MOMENTUM or dropped.
  */
-async function enrichTickersWithMarketData(
-  tickers: string[],
-  sentimentMap: Record<string, MergedSentiment>
-): Promise<Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>> {
-  const results: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> = [];
+function validateQualityTickers(
+  tickers: Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
+): Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> {
+  return tickers.map((t) => {
+    if (t.tier !== 'QUALITY') return t;
 
-  // Process one ticker at a time to respect Finnhub free tier rate limits
-  // Each ticker needs ~4 API calls, so we space them out
+    const meetsPrice = t.price.price >= 20 && t.price.price <= 100;
+    const meetsMarketCap = t.fundamentals.marketCap > 500_000_000;
+    const meetsVolume = t.price.avgVolume30d > 750_000;
+
+    if (meetsPrice && meetsMarketCap && meetsVolume) return t;
+
+    // Reclassify to MOMENTUM if it's a lower-priced stock
+    if (t.price.price < 20) {
+      console.log(`  Reclassified ${t.price.ticker} from QUALITY to MOMENTUM (price $${t.price.price.toFixed(2)})`);
+      return { ...t, tier: 'MOMENTUM' as Tier };
+    }
+
+    // Drop if it doesn't fit either tier
+    console.log(`  Dropped ${t.price.ticker} from QUALITY (cap=$${(t.fundamentals.marketCap / 1e6).toFixed(0)}M, vol=${Math.round(t.price.avgVolume30d).toLocaleString()})`);
+    return null;
+  }).filter((t): t is NonNullable<typeof t> => t !== null);
+}
+
+/**
+ * Enrich tickers with price and fundamental data (tiered version)
+ */
+async function enrichTickersWithMarketDataTiered(
+  tieredTickers: TieredTicker[]
+): Promise<Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>> {
+  const results: Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> = [];
+
   let processed = 0;
 
-  for (const ticker of tickers) {
+  for (const { ticker, tier, sentiment } of tieredTickers) {
     try {
-      // Fetch price and fundamentals sequentially to avoid rate limits
       const price = await finnhub.fetchPriceData(ticker);
       const fundamentals = await finnhub.fetchFundamentalData(ticker);
 
       if (price && fundamentals) {
         results.push({
-          sentiment: sentimentMap[ticker],
+          tier,
+          sentiment,
           price,
           fundamentals,
         });
@@ -330,29 +439,34 @@ async function enrichTickersWithMarketData(
 
     processed++;
     if (processed % 10 === 0) {
-      console.log(`  Progress: ${processed}/${tickers.length} tickers`);
+      console.log(`  Progress: ${processed}/${tieredTickers.length} tickers`);
     }
 
-    // Delay between tickers to stay under rate limit
     await sleep(2000);
   }
 
   return results;
 }
 
-// Type for tickers with technical indicators
+// Type for tickers with technical indicators (tiered)
 type TickerWithTechnicals = {
+  tier: Tier;
   sentiment: MergedSentiment;
   price: PriceData;
   fundamentals: FundamentalData;
   technicals: TechnicalIndicators | null;
 };
 
+// Type for tickers with technical indicators + enrichment
+type TickerWithEnrichment = TickerWithTechnicals & {
+  enrichment?: ClassifierEnrichment;
+};
+
 /**
- * Calculate technical indicators for all filtered tickers
+ * Calculate technical indicators for all filtered tickers (tiered)
  */
-async function calculateTechnicalsForTickers(
-  tickers: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
+async function calculateTechnicalsForTickersTiered(
+  tickers: Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
 ): Promise<TickerWithTechnicals[]> {
   const results: TickerWithTechnicals[] = [];
 
@@ -371,7 +485,6 @@ async function calculateTechnicalsForTickers(
       });
     }
 
-    // Small delay between requests to avoid rate limiting
     await sleep(500);
   }
 
@@ -379,22 +492,51 @@ async function calculateTechnicalsForTickers(
 }
 
 /**
- * Apply universe filters (US/OTC, price <= $10, etc.)
+ * Fetch classifier enrichment data (analyst ratings, earnings, news) for each ticker
  */
-function applyUniverseFilters(
-  tickers: Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
-): Array<{ sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> {
-  // For testing, skip filters if TEST_MODE is set
+async function fetchClassifierEnrichment(
+  tickers: TickerWithTechnicals[]
+): Promise<TickerWithEnrichment[]> {
+  const results: TickerWithEnrichment[] = [];
+
+  for (const ticker of tickers) {
+    try {
+      // Pass any existing finviz headlines if available
+      const existingHeadlines: string[] = [];
+      const enrichment = await enrichForClassifier(ticker.price.ticker, existingHeadlines);
+      results.push({
+        ...ticker,
+        enrichment,
+      });
+    } catch (error) {
+      console.warn(`Failed to fetch enrichment for ${ticker.price.ticker}:`, error);
+      results.push({ ...ticker });
+    }
+
+    await sleep(1000);
+  }
+
+  return results;
+}
+
+/**
+ * Apply universe filters (tiered version).
+ * MOMENTUM tickers: price <= maxPrice (penny stock filters)
+ * QUALITY tickers: skip price ceiling (already validated), still check country/exchange
+ */
+function applyUniverseFiltersTiered(
+  tickers: Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }>
+): Array<{ tier: Tier; sentiment: MergedSentiment; price: PriceData; fundamentals: FundamentalData }> {
   if (process.env.TEST_MODE === 'true') {
     console.log('  TEST_MODE: Skipping universe filters');
     return tickers;
   }
 
-  return tickers.filter(({ price, fundamentals }) => {
+  return tickers.filter(({ tier, price, fundamentals }) => {
     const ticker = price.ticker;
 
-    // Price filter
-    if (price.price > universeConfig.maxPrice) {
+    // Price filter — only for MOMENTUM tier
+    if (tier === 'MOMENTUM' && price.price > universeConfig.maxPrice) {
       console.log(`  Filtered ${ticker}: price $${price.price} > $${universeConfig.maxPrice}`);
       return false;
     }
@@ -430,16 +572,16 @@ function applyUniverseFilters(
 }
 
 /**
- * Score and classify all tickers
+ * Score and classify all tickers (dual-tier aware)
  */
 async function scoreAndClassify(
-  tickers: TickerWithTechnicals[]
-): Promise<(TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null })[]> {
-  const results: (TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null })[] = [];
+  tickers: TickerWithEnrichment[]
+): Promise<(TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null; classificationDetail: DualTierClassificationResult | null })[]> {
+  const results: (TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null; classificationDetail: DualTierClassificationResult | null })[] = [];
 
-  for (const { sentiment, price, fundamentals, technicals: tickerTechnicals } of tickers) {
-    // Calculate scores
-    let scores = scoring.calculateAllScores(sentiment, price, fundamentals);
+  for (const { tier, sentiment, price, fundamentals, technicals: tickerTechnicals, enrichment } of tickers) {
+    // Calculate scores with tier + enrichment
+    let scores = scoring.calculateAllScores(sentiment, price, fundamentals, tier, enrichment);
 
     // Apply technical score modifier if available
     if (tickerTechnicals) {
@@ -454,27 +596,39 @@ async function scoreAndClassify(
     const { classification: prelimClassification, alertType, reason } = scoring.classifyTicker(scores);
 
     // Use Perplexity for detailed analysis (only for interesting tickers to save API calls)
-    let classificationResult;
-    let aiTarget;
+    let classificationResult: DualTierClassificationResult | null = null;
+    let aiTarget: { target: number; reasoning: string; confidence: number } | undefined;
+
     if (alertType !== null || scores.attention > 50 || scores.momentum > 50) {
       classificationResult = await classifier.generateAnalysis({
         ticker: sentiment.ticker,
+        tier,
         scores,
         sentiment,
         price,
         fundamentals,
+        enrichment,
         preliminaryClassification: prelimClassification,
       });
       aiTarget = classificationResult.targetPrice;
-    } else {
-      classificationResult = {
-        classification: prelimClassification,
-        confidence: 0.5,
-        bullCase: reason,
-        bearCase: 'Does not meet criteria for detailed analysis',
-        catalysts: [],
-      };
     }
+
+    // Build ClassificationResult for backward compatibility
+    const classification = classificationResult
+      ? {
+          classification: classificationResult.classification,
+          confidence: classificationResult.confidence,
+          bullCase: classificationResult.bullCase,
+          bearCase: classificationResult.bearCase,
+          catalysts: classificationResult.catalysts,
+        }
+      : {
+          classification: prelimClassification,
+          confidence: 0.5,
+          bullCase: reason,
+          bearCase: 'Does not meet criteria for detailed analysis',
+          catalysts: [] as string[],
+        };
 
     // Calculate target prices using all 4 methods
     const targets = calculateTargetPrices(price, fundamentals, scores, aiTarget);
@@ -483,15 +637,18 @@ async function scoreAndClassify(
       ticker: sentiment.ticker,
       runId: RUN_ID,
       runTimestamp: new Date(),
+      tier,
       sentiment,
       price,
       fundamentals,
       scores,
-      classification: classificationResult,
+      classification,
+      enrichment,
       alertTriggered: alertType !== null,
       alertType,
       targets,
       technicals: tickerTechnicals,
+      classificationDetail: classificationResult,
     });
   }
 
@@ -501,9 +658,11 @@ async function scoreAndClassify(
 /**
  * Save results to database
  */
-async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null })[]): Promise<void> {
+async function saveResults(
+  analyses: (TickerAnalysis & { targets: TargetPrices; technicals: TechnicalIndicators | null; classificationDetail: DualTierClassificationResult | null })[]
+): Promise<void> {
   for (const analysis of analyses) {
-    const { ticker, sentiment, price, fundamentals, scores, classification, targets, technicals: tech } = analysis;
+    const { ticker, sentiment, price, fundamentals, scores, classification, targets, technicals: tech, classificationDetail: cd, enrichment } = analysis;
 
     await db.query(
       `INSERT INTO scan_results (
@@ -527,7 +686,11 @@ async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices; 
         rsi_14, macd_value, macd_signal, macd_histogram,
         bb_upper, bb_middle, bb_lower,
         sma_20, sma_50, sma_200, ema_20,
-        technical_signal, technical_strength
+        technical_signal, technical_strength,
+        tier, value_score, catalyst_score, emerging_industry_score,
+        thesis, edge_why_now, industry_theme, stop_loss_pct, expected_returns,
+        analyst_mean_target, analyst_summary, earnings_date, days_to_earnings,
+        earnings_beat_rate, news_headlines
       ) VALUES (
         $1, $2, $3,
         $4, $5, $6,
@@ -549,7 +712,11 @@ async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices; 
         $56, $57, $58, $59,
         $60, $61, $62,
         $63, $64, $65, $66,
-        $67, $68
+        $67, $68,
+        $69, $70, $71, $72,
+        $73, $74, $75, $76, $77,
+        $78, $79, $80, $81,
+        $82, $83
       )`,
       [
         analysis.runId,
@@ -621,6 +788,23 @@ async function saveResults(analyses: (TickerAnalysis & { targets: TargetPrices; 
         tech?.ema20 ?? null,
         tech?.technicalSignal ?? null,
         tech?.signalStrength ?? null,
+        // Dual-tier columns
+        analysis.tier,
+        cd?.valueScore ?? null,
+        cd?.catalystScore ?? null,
+        cd?.emergingIndustryScore ?? null,
+        cd?.thesis ?? null,
+        cd?.edgeWhyNow ?? null,
+        cd?.industryTheme ?? null,
+        cd?.stopLossPct ?? null,
+        cd ? JSON.stringify(cd.expectedReturns) : null,
+        // Enrichment columns
+        enrichment?.analystRatings?.meanTarget ?? null,
+        enrichment?.analystRatings?.summary ?? null,
+        enrichment?.earnings?.nextDate ?? null,
+        enrichment?.earnings?.daysToEarnings ?? null,
+        enrichment?.earnings?.earningsBeatRate ?? null,
+        enrichment?.newsHeadlines ?? null,
       ]
     );
   }
@@ -645,15 +829,18 @@ async function updateRunRecord(
   status: string,
   tickersScanned: number,
   alertsGenerated: number,
-  errorMessage?: string
+  errorMessage?: string,
+  momentumCount?: number,
+  qualityCount?: number
 ): Promise<void> {
   const duration = Date.now() - START_TIME;
   await db.query(
     `UPDATE scan_runs
      SET status = $1, tickers_scanned = $2, alerts_generated = $3,
-         duration_ms = $4, error_message = $5
+         duration_ms = $4, error_message = $5,
+         momentum_count = $7, quality_count = $8
      WHERE run_id = $6`,
-    [status, tickersScanned, alertsGenerated, duration, errorMessage || null, RUN_ID]
+    [status, tickersScanned, alertsGenerated, duration, errorMessage || null, RUN_ID, momentumCount ?? null, qualityCount ?? null]
   );
 }
 
@@ -671,7 +858,9 @@ function printSummary(analyses: TickerAnalysis[]): void {
   console.log(`\n${'='.repeat(60)}`);
   console.log('PIPELINE SUMMARY');
   console.log(`${'='.repeat(60)}`);
-  console.log(`Total tickers analyzed: ${analyses.length}`);
+  const mCount = analyses.filter(a => a.tier === 'MOMENTUM').length;
+  const qCount = analyses.filter(a => a.tier === 'QUALITY').length;
+  console.log(`Total tickers analyzed: ${analyses.length} (${mCount} MOMENTUM, ${qCount} QUALITY)`);
   console.log(`Duration: ${duration}s`);
   console.log(`\nClassification breakdown:`);
   console.log(`  - Runners: ${runners.length}`);
