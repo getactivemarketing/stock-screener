@@ -53,6 +53,7 @@ export async function loadTradingConfig(): Promise<TradingConfig> {
     dailyLossLimitPct: row.daily_loss_limit_pct as number,
     scanMissMax: row.scan_miss_max as number,
     slippagePct: row.slippage_pct as number,
+    qualityHoldDaysMax: Number(row.quality_hold_days_max) || 15,
   };
 }
 
@@ -218,11 +219,16 @@ async function evaluateSell(
   }
 
   // 3. Max hold days exceeded
-  if (daysHeld >= config.holdDaysMax) {
+  // Use tier-appropriate hold period
+  const maxHoldDays = (analysis?.tier === 'QUALITY')
+    ? config.qualityHoldDaysMax
+    : config.holdDaysMax;
+
+  if (daysHeld >= maxHoldDays) {
     return {
       ticker,
       action: 'SELL',
-      reason: `Max hold period exceeded (${daysHeld} >= ${config.holdDaysMax} days)`,
+      reason: `Max hold period exceeded (${daysHeld} >= ${maxHoldDays} days)`,
       quantity: position.quantity,
       classification,
       scores,
@@ -327,14 +333,25 @@ async function evaluateBuy(
     };
   }
 
-  // ── Position sizing ──
-  const isHighConviction =
-    scores.attention >= config.highConvictionMinScores &&
-    scores.momentum >= config.highConvictionMinScores &&
-    scores.fundamentals >= config.highConvictionMinScores &&
-    scores.risk < config.highConvictionMaxRisk;
+  // Position sizing by tier
+  const tier = result.tier;
 
-  const sizePct = isHighConviction ? config.highConvictionSizePct : config.maxPositionPct;
+  // High conviction: look for lens scores on the classification result
+  const classAny = result.classification as any;
+  const valueScore = classAny?.valueScore ?? 0;
+  const catalystScore = classAny?.catalystScore ?? 0;
+  const emergingScore = classAny?.emergingIndustryScore ?? 0;
+
+  const isHighConviction = valueScore >= 7 && catalystScore >= 7 && emergingScore >= 7 && scores.risk < 30;
+
+  let sizePct: number;
+  if (isHighConviction) {
+    sizePct = 15;
+  } else if (tier === 'QUALITY') {
+    sizePct = 12.5;
+  } else {
+    sizePct = 7.5;
+  }
   const rawOrderValue = account.portfolioValue * (sizePct / 100);
   // Apply slippage buffer
   const orderValue = rawOrderValue * (1 - config.slippagePct / 100);
