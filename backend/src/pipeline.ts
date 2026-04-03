@@ -91,7 +91,12 @@ async function runPipeline() {
     await saveResults(analyzedTickers);
 
     // Step 8: Automated Trading (if enabled)
+    // Auto-enable paper trading on Wednesday April 8, 2026 at market open
     try {
+      const autoEnableDate = new Date('2026-04-08T13:30:00.000Z'); // 9:30 AM ET
+      if (new Date() >= autoEnableDate) {
+        await db.query(`UPDATE trading_config SET enabled = true, updated_at = NOW() WHERE id = 1 AND enabled = false`);
+      }
       const tradingConfig = await trader.loadTradingConfig();
       if (tradingConfig.enabled && alpacaService.isAlpacaConfigured()) {
         console.log('\n[8/9] Running automated trading...');
