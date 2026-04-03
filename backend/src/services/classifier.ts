@@ -5,22 +5,11 @@ import type {
   MergedSentiment,
   PriceData,
   FundamentalData,
-  ClassificationResult,
   Classification,
+  ClassifierEnrichment,
+  Tier,
+  DualTierClassificationResult,
 } from '../types/index.js';
-
-export interface AITargetPrice {
-  target: number;
-  reasoning: string;
-  confidence: number;
-}
-
-export interface AnalysisWithTarget extends ClassificationResult {
-  targetPrice?: AITargetPrice;
-  tradeRationale?: string;
-  suggestedPositionPct?: number;
-  keyRisk?: string;
-}
 
 // Perplexity uses OpenAI-compatible API
 const perplexity = new OpenAI({
@@ -30,17 +19,16 @@ const perplexity = new OpenAI({
 
 interface TickerContext {
   ticker: string;
+  tier: Tier;
   scores: Scores;
   sentiment: MergedSentiment;
   price: PriceData;
   fundamentals: FundamentalData;
+  enrichment?: ClassifierEnrichment;
   preliminaryClassification: Classification;
 }
 
-/**
- * Use Perplexity to generate detailed analysis for a ticker
- */
-export async function generateAnalysis(context: TickerContext): Promise<AnalysisWithTarget> {
+export async function generateAnalysis(context: TickerContext): Promise<DualTierClassificationResult> {
   const prompt = buildPrompt(context);
 
   try {
@@ -49,148 +37,211 @@ export async function generateAnalysis(context: TickerContext): Promise<Analysis
       messages: [
         {
           role: 'system',
-          content: 'You are a quantitative stock analyst. Respond only with valid JSON, no markdown or explanation.',
+          content: 'You are a professional equity analyst. Respond only with valid JSON, no markdown or explanation.',
         },
-        {
-          role: 'user',
-          content: prompt,
-        },
+        { role: 'user', content: prompt },
       ],
-      max_tokens: 1024,
+      max_tokens: 1500,
       temperature: 0.2,
     });
 
     const responseText = response.choices[0]?.message?.content || '';
-    return parseResponse(responseText, context.preliminaryClassification, context.price.price);
+    return parseResponse(responseText, context.preliminaryClassification, context.price.price, context.tier);
   } catch (error) {
     console.error(`Perplexity analysis failed for ${context.ticker}:`, error);
-    // Return a default response if Perplexity fails
-    return {
-      classification: context.preliminaryClassification,
-      confidence: 0.5,
-      bullCase: 'Analysis unavailable',
-      bearCase: 'Analysis unavailable',
-      catalysts: [],
-    };
+    return parseResponse('{}', context.preliminaryClassification, context.price.price, context.tier);
   }
 }
 
 function buildPrompt(context: TickerContext): string {
-  const { ticker, scores, sentiment, price, fundamentals, preliminaryClassification } = context;
+  const { ticker, tier, scores, sentiment, price, fundamentals, enrichment } = context;
 
-  return `Analyze this penny stock and provide a brief assessment.
+  const analystRatings = enrichment?.analystRatings
+    ? `${enrichment.analystRatings.summary}${enrichment.analystRatings.meanTarget ? ` | Mean target: $${enrichment.analystRatings.meanTarget.toFixed(2)}` : ''}`
+    : 'No analyst coverage';
+
+  const earningsDate = enrichment?.earnings?.nextDate || 'Unknown';
+  const daysToEarnings = enrichment?.earnings?.daysToEarnings !== null && enrichment?.earnings?.daysToEarnings !== undefined
+    ? `${enrichment.earnings.daysToEarnings}` : 'Unknown';
+
+  const headlines = enrichment?.newsHeadlines?.length
+    ? enrichment.newsHeadlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
+    : 'No recent news';
+
+  return `You are a professional equity analyst evaluating stocks for an automated momentum + value trading strategy. You have been given a stock with the following pre-computed data:
 
 TICKER: ${ticker}
 COMPANY: ${fundamentals.name || 'Unknown'}
 SECTOR: ${fundamentals.sector || 'Unknown'}
-EXCHANGE: ${fundamentals.exchange || 'Unknown'}
+PRICE: $${price.price.toFixed(2)} | CHANGE: ${price.change1dPercent.toFixed(2)}%
+MARKET CAP: $${formatMarketCap(fundamentals.marketCap)}
+AVG DAILY VOLUME: ${Math.round(price.avgVolume30d).toLocaleString()}
+TIER: ${tier}
+ATTENTION SCORE: ${scores.attention}/100
+MOMENTUM SCORE: ${scores.momentum}/100
+FUNDAMENTALS SCORE: ${scores.fundamentals}/100
+RISK SCORE: ${scores.risk}/100 (lower = safer)
+RSI: N/A | MACD: N/A | Volume vs Avg: ${price.relativeVolume.toFixed(2)}x
+ANALYST RATINGS: ${analystRatings}
+UPCOMING EARNINGS: ${earningsDate} (${daysToEarnings} days away)
+RECENT NEWS HEADLINES:
+${headlines}
 
-COMPUTED SCORES (0-100):
-- Attention Score: ${scores.attention} (social media buzz and sentiment)
-- Momentum Score: ${scores.momentum} (price action and volume)
-- Fundamentals Score: ${scores.fundamentals} (financial health)
-- Risk Score: ${scores.risk} (pump & dump probability)
+---
 
-SENTIMENT DATA:
-- Total Mentions: ${sentiment.totalMentions}
-- Average Sentiment: ${sentiment.avgSentiment.toFixed(1)}
-- Momentum (vs prior period): ${sentiment.maxMomentum.toFixed(2)}x
-- Sources tracking: ${sentiment.sourceCount}
+TIER CONTEXT — read this before evaluating:
 
-PRICE DATA:
-- Current Price: $${price.price.toFixed(2)}
-- 1-Day Change: ${price.change1dPercent.toFixed(2)}%
-- 5-Day Change: ${price.change5dPercent.toFixed(2)}%
-- 30-Day Change: ${price.change30dPercent.toFixed(2)}%
-- Relative Volume: ${price.relativeVolume.toFixed(2)}x average
-- Distance from 52W High: ${(((price.high52w - price.price) / price.high52w) * 100).toFixed(1)}%
+If TIER = "MOMENTUM":
+This is a retail-driven penny stock under $20. The edge here is social sentiment + short-term price momentum.
+Prioritize: attention velocity (mentions accelerating), relative volume spikes, technical breakout setups,
+short squeeze potential, and imminent catalysts (earnings, FDA, PR).
+Fundamentals matter less — focus on whether the attention is building toward a move.
+Typical hold: 1-5 days. Target return: 10-30%.
 
-FUNDAMENTALS:
-- Market Cap: $${formatMarketCap(fundamentals.marketCap)}
-- P/E Ratio: ${fundamentals.peRatio ?? 'N/A'}
-- Revenue Growth: ${fundamentals.revenueGrowth ? fundamentals.revenueGrowth.toFixed(1) + '%' : 'N/A'}
-- Gross Margin: ${fundamentals.grossMargin ? fundamentals.grossMargin.toFixed(1) + '%' : 'N/A'}
-- Debt/Equity: ${fundamentals.debtEquity ?? 'N/A'}
+If TIER = "QUALITY":
+This is a mid-cap stock with real liquidity and institutional coverage. The edge here is mispricing + catalysts
+that the market hasn't fully priced in.
+Prioritize: undervaluation vs. sector peers (forward P/E, P/S, EV/EBITDA), upcoming earnings with
+beatable consensus estimates, emerging industry tailwinds (AI infrastructure, defense, energy transition,
+biotech pipeline, GLP-1/obesity, US reshoring), and technical entry points (pullback from highs, RSI reset).
+Fundamentals matter a lot — look for a quality business at a reasonable price with a near-term catalyst.
+Typical hold: 3-20 days. Target return: 8-25%.
 
-PRELIMINARY CLASSIFICATION: ${preliminaryClassification}
+---
 
-Respond with ONLY a JSON object (no markdown, no explanation):
+Evaluate this stock across THREE lenses:
+
+LENS 1 — VALUE: Is this stock undervalued relative to its fundamentals or peers?
+- MOMENTUM tier: Is the price compressed/beaten-down relative to recent range? Low float + high short interest?
+- QUALITY tier: Forward P/E below sector median? Price-to-book below 1.5? Revenue growth not yet in price?
+  Trading below analyst consensus target?
+
+LENS 2 — CATALYST: Is there an imminent price catalyst within 1-30 days?
+Look for: earnings (especially if beatable or with guidance revision potential), FDA decisions, contract
+wins, partnerships, product launches, index inclusion, analyst upgrades, short squeeze setup, or major
+macro event that directly benefits this company.
+
+LENS 3 — EMERGING INDUSTRY: Is this company operating in a high-growth secular trend?
+Look for: AI infrastructure (power, chips, data centers), energy transition (nuclear, solar, grid storage),
+defense/aerospace ramp, biotech pipeline, quantum computing, robotics/automation, US reshoring/manufacturing,
+GLP-1/obesity drugs, cybersecurity. A company riding a secular tailwind has a higher floor on any pullback.
+
+---
+
+Score each lens 0-10, produce your classification and trading plan, and respond ONLY in this exact JSON format:
+
 {
-  "classification": "runner" | "value" | "both" | "avoid" | "watch",
+  "classification": "runner" | "value" | "both" | "watch" | "avoid",
+  "tier": "${tier}",
   "confidence": 0.0-1.0,
-  "bullCase": "1-2 sentence bull case",
-  "bearCase": "1-2 sentence bear case",
-  "catalysts": ["catalyst1", "catalyst2"],
-  "targetPrice": {
-    "target": number (your price target in dollars),
-    "reasoning": "1-2 sentence explanation for target",
+  "value_score": 0-10,
+  "catalyst_score": 0-10,
+  "emerging_industry_score": 0-10,
+  "thesis": "2-3 sentences. For MOMENTUM stocks: focus on attention setup and technical trigger. For QUALITY stocks: cite specific valuation metrics, the mispricing, and what unlocks it. Always include at least one real number.",
+  "edge_why_now": "1-2 sentences on why THIS WEEK is the right time.",
+  "bull_case": "Best-case outcome and what drives it (1-2 sentences).",
+  "bear_case": "What invalidates the thesis (1 sentence).",
+  "key_risk": "The single most important risk to monitor.",
+  "catalysts": ["list", "of", "specific", "upcoming", "catalysts"],
+  "industry_theme": "Name the macro trend or null.",
+  "trade_rationale": "One punchy sentence a trader would say out loud.",
+  "suggested_position_pct": 5-15,
+  "target_price": {
+    "target": 0.00,
+    "reasoning": "Brief target reasoning.",
     "confidence": 0.0-1.0
   },
-  "tradeRationale": "1-2 sentence core thesis for why this is or isn't a trade (e.g. 'High retail attention + improving fundamentals suggest short-term momentum play')",
-  "suggestedPositionPct": 0-15 (suggested portfolio allocation percentage, 0 if avoid),
-  "keyRisk": "1 sentence describing the single biggest risk to the thesis"
-}`;
+  "stop_loss_pct": -10 to -20,
+  "expected_returns": {
+    "1m": "+X%",
+    "3m": "+X%",
+    "12m": "+X%"
+  }
 }
 
-function parseResponse(response: string, fallbackClassification: Classification, currentPrice: number): AnalysisWithTarget {
+CLASSIFICATION RULES:
+- "runner": Strong momentum + imminent catalyst OR accelerating retail attention. Primarily for MOMENTUM tier.
+- "value": Fundamentally undervalued with a near-term catalyst to unlock it. Primarily for QUALITY tier.
+- "both": Meets runner AND value criteria. Rare — highest conviction across both tiers.
+- "watch": Interesting but missing one key ingredient. Set an alert, don't act yet.
+- "avoid": No clear edge in any lens, or risk score too high with no offsetting thesis.
+
+POSITION SIZING GUIDANCE:
+- MOMENTUM tier: default 5-10% (higher volatility, shorter hold, smaller size)
+- QUALITY tier: default 10-15% (higher conviction, longer hold, larger size justified)
+- High conviction (all lens scores >= 7, risk score < 30): can go to 15%
+
+Do not hallucinate financials. If data for a lens is missing or uncertain, score it 0 and reduce confidence accordingly.`;
+}
+
+function parseResponse(
+  response: string,
+  fallbackClassification: Classification,
+  currentPrice: number,
+  tier: Tier
+): DualTierClassificationResult {
   try {
-    // Extract JSON from response (handle markdown code blocks if present)
     let jsonStr = response.trim();
     const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[0];
-    }
+    if (jsonMatch) jsonStr = jsonMatch[0];
 
-    const parsed = JSON.parse(jsonStr);
-
-    // Parse target price if present
-    let targetPrice: AITargetPrice | undefined;
-    if (parsed.targetPrice && typeof parsed.targetPrice.target === 'number') {
-      targetPrice = {
-        target: Math.round(parsed.targetPrice.target * 100) / 100,
-        reasoning: typeof parsed.targetPrice.reasoning === 'string' ? parsed.targetPrice.reasoning : 'AI-generated target',
-        confidence: typeof parsed.targetPrice.confidence === 'number' ? Math.max(0, Math.min(1, parsed.targetPrice.confidence)) : 0.5,
-      };
-    } else {
-      // Default target: 15% upside
-      targetPrice = {
-        target: Math.round(currentPrice * 1.15 * 100) / 100,
-        reasoning: 'Default target based on moderate upside potential',
-        confidence: 0.4,
-      };
-    }
+    const p = JSON.parse(jsonStr);
 
     return {
-      classification: validateClassification(parsed.classification) || fallbackClassification,
-      confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
-      bullCase: typeof parsed.bullCase === 'string' ? parsed.bullCase : 'Analysis unavailable',
-      bearCase: typeof parsed.bearCase === 'string' ? parsed.bearCase : 'Analysis unavailable',
-      catalysts: Array.isArray(parsed.catalysts) ? parsed.catalysts.filter((c: unknown) => typeof c === 'string') : [],
-      targetPrice,
-      tradeRationale: typeof parsed.tradeRationale === 'string'
-        ? parsed.tradeRationale
-        : typeof parsed.bullCase === 'string'
-          ? `AI assessment: ${parsed.bullCase}`
-          : undefined,
-      suggestedPositionPct: typeof parsed.suggestedPositionPct === 'number'
-        ? Math.max(0, Math.min(15, parsed.suggestedPositionPct))
-        : undefined,
-      keyRisk: typeof parsed.keyRisk === 'string' ? parsed.keyRisk : undefined,
+      classification: validateClassification(p.classification) || fallbackClassification,
+      tier,
+      confidence: typeof p.confidence === 'number' ? Math.max(0, Math.min(1, p.confidence)) : 0.5,
+      valueScore: typeof p.value_score === 'number' ? Math.max(0, Math.min(10, Math.round(p.value_score))) : 0,
+      catalystScore: typeof p.catalyst_score === 'number' ? Math.max(0, Math.min(10, Math.round(p.catalyst_score))) : 0,
+      emergingIndustryScore: typeof p.emerging_industry_score === 'number' ? Math.max(0, Math.min(10, Math.round(p.emerging_industry_score))) : 0,
+      thesis: typeof p.thesis === 'string' ? p.thesis : 'Analysis unavailable',
+      edgeWhyNow: typeof p.edge_why_now === 'string' ? p.edge_why_now : '',
+      bullCase: typeof p.bull_case === 'string' ? p.bull_case : 'Analysis unavailable',
+      bearCase: typeof p.bear_case === 'string' ? p.bear_case : 'Analysis unavailable',
+      keyRisk: typeof p.key_risk === 'string' ? p.key_risk : '',
+      catalysts: Array.isArray(p.catalysts) ? p.catalysts.filter((c: unknown) => typeof c === 'string') : [],
+      industryTheme: typeof p.industry_theme === 'string' ? p.industry_theme : null,
+      tradeRationale: typeof p.trade_rationale === 'string' ? p.trade_rationale : '',
+      suggestedPositionPct: typeof p.suggested_position_pct === 'number' ? Math.max(0, Math.min(15, p.suggested_position_pct)) : (tier === 'QUALITY' ? 10 : 5),
+      targetPrice: {
+        target: p.target_price?.target && typeof p.target_price.target === 'number'
+          ? Math.round(p.target_price.target * 100) / 100
+          : Math.round(currentPrice * 1.15 * 100) / 100,
+        reasoning: typeof p.target_price?.reasoning === 'string' ? p.target_price.reasoning : 'Default target',
+        confidence: typeof p.target_price?.confidence === 'number' ? Math.max(0, Math.min(1, p.target_price.confidence)) : 0.4,
+      },
+      stopLossPct: typeof p.stop_loss_pct === 'number' ? Math.max(-30, Math.min(-5, p.stop_loss_pct)) : (tier === 'QUALITY' ? -12 : -15),
+      expectedReturns: {
+        oneMonth: typeof p.expected_returns?.['1m'] === 'string' ? p.expected_returns['1m'] : 'N/A',
+        threeMonth: typeof p.expected_returns?.['3m'] === 'string' ? p.expected_returns['3m'] : 'N/A',
+        twelveMonth: typeof p.expected_returns?.['12m'] === 'string' ? p.expected_returns['12m'] : 'N/A',
+      },
     };
   } catch (error) {
     console.error('Failed to parse Perplexity response:', error);
-    console.error('Raw response:', response);
     return {
       classification: fallbackClassification,
-      confidence: 0.5,
-      bullCase: 'Analysis parsing failed',
-      bearCase: 'Analysis parsing failed',
+      tier,
+      confidence: 0.3,
+      valueScore: 0,
+      catalystScore: 0,
+      emergingIndustryScore: 0,
+      thesis: 'Analysis parsing failed',
+      edgeWhyNow: '',
+      bullCase: 'Analysis unavailable',
+      bearCase: 'Analysis unavailable',
+      keyRisk: '',
       catalysts: [],
+      industryTheme: null,
+      tradeRationale: '',
+      suggestedPositionPct: 5,
       targetPrice: {
         target: Math.round(currentPrice * 1.15 * 100) / 100,
         reasoning: 'Default target (analysis failed)',
-        confidence: 0.3,
+        confidence: 0.2,
       },
+      stopLossPct: -15,
+      expectedReturns: { oneMonth: 'N/A', threeMonth: 'N/A', twelveMonth: 'N/A' },
     };
   }
 }
