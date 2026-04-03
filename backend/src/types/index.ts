@@ -91,11 +91,13 @@ export interface TickerAnalysis {
   ticker: string;
   runId: string;
   runTimestamp: Date;
+  tier: Tier;                              // NEW - add this
   sentiment: MergedSentiment;
   price: PriceData;
   fundamentals: FundamentalData;
   scores: Scores;
   classification: ClassificationResult;
+  enrichment?: ClassifierEnrichment;       // NEW - add this
   alertTriggered: boolean;
   alertType: 'runner' | 'value' | 'both' | 'pump_warning' | null;
 }
@@ -239,6 +241,7 @@ export interface TradingConfig {
   dailyLossLimitPct: number;
   scanMissMax: number;
   slippagePct: number;
+  qualityHoldDaysMax: number;
 }
 
 export interface TradeDecision {
@@ -301,4 +304,53 @@ export interface EnrichedClassificationResult extends ClassificationResult {
   tradeRationale?: string;
   suggestedPositionPct?: number;
   keyRisk?: string;
+}
+
+// ── Dual-Tier Types ────────────────────────────────────
+
+export type Tier = 'MOMENTUM' | 'QUALITY';
+
+export interface ClassifierEnrichment {
+  analystRatings: {
+    summary: string;
+    meanTarget: number | null;
+    highTarget: number | null;
+    lowTarget: number | null;
+  } | null;
+  earnings: {
+    nextDate: string | null;
+    daysToEarnings: number | null;
+    epsEstimate: number | null;
+    earningsBeatRate: number | null;
+  } | null;
+  newsHeadlines: string[] | null;
+}
+
+export interface DualTierClassificationResult {
+  classification: Classification;
+  tier: Tier;
+  confidence: number;
+  valueScore: number;
+  catalystScore: number;
+  emergingIndustryScore: number;
+  thesis: string;
+  edgeWhyNow: string;
+  bullCase: string;
+  bearCase: string;
+  keyRisk: string;
+  catalysts: string[];
+  industryTheme: string | null;
+  tradeRationale: string;
+  suggestedPositionPct: number;
+  targetPrice: {
+    target: number;
+    reasoning: string;
+    confidence: number;
+  };
+  stopLossPct: number;
+  expectedReturns: {
+    oneMonth: string;
+    threeMonth: string;
+    twelveMonth: string;
+  };
 }
