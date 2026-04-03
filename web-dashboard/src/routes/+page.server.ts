@@ -27,6 +27,8 @@ export async function load() {
     runners: results.filter(r => r.classification === 'runner').length,
     valuePlays: results.filter(r => r.classification === 'value').length,
     alerts: results.filter(r => r.alert_triggered).length,
+    momentumCount: (latestRun as any)?.momentum_count ?? results.filter((r: any) => r.tier === 'MOMENTUM').length,
+    qualityCount: (latestRun as any)?.quality_count ?? results.filter((r: any) => r.tier === 'QUALITY').length,
   };
 
   return {
