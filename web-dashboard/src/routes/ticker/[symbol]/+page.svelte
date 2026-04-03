@@ -161,6 +161,79 @@
   <p class="confidence">Confidence: {((result.confidence || 0.5) * 100).toFixed(0)}%</p>
 </div>
 
+<!-- AI Thesis Hero -->
+{#if data.result.thesis}
+  <div class="card thesis-hero">
+    <div class="thesis-header">
+      <div class="thesis-badges">
+        {#if data.result.tier}
+          <span class="tier-badge tier-{data.result.tier?.toLowerCase()}">{data.result.tier}</span>
+        {/if}
+        <span class="badge badge-{data.result.classification || 'watch'}">
+          {data.result.classification || 'watch'}
+        </span>
+        <span style="color: var(--text-muted); font-size: 0.75rem;">
+          {Math.round((data.result.confidence || 0) * 100)}% confidence
+        </span>
+        {#if data.result.industry_theme}
+          <span class="theme-badge">{data.result.industry_theme}</span>
+        {/if}
+      </div>
+      <div class="lens-scores">
+        <div class="lens-box">
+          <div class="lens-label">VALUE</div>
+          <div class="lens-value" style="color: var(--green)">{data.result.value_score ?? '-'}</div>
+        </div>
+        <div class="lens-box">
+          <div class="lens-label">CATALYST</div>
+          <div class="lens-value" style="color: var(--blue)">{data.result.catalyst_score ?? '-'}</div>
+        </div>
+        <div class="lens-box">
+          <div class="lens-label">EMERGING</div>
+          <div class="lens-value" style="color: var(--purple)">{data.result.emerging_industry_score ?? '-'}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="thesis-body">
+      <p class="thesis-text">{data.result.thesis}</p>
+      {#if data.result.edge_why_now}
+        <p class="thesis-why-now">{data.result.edge_why_now}</p>
+      {/if}
+    </div>
+
+    <div class="thesis-footer">
+      {#if data.result.target_avg}
+        <div class="thesis-metric">
+          <span class="thesis-metric-label">Target</span>
+          <span class="positive">${Number(data.result.target_avg).toFixed(2)}
+            ({(((Number(data.result.target_avg) - Number(data.result.price)) / Number(data.result.price)) * 100).toFixed(1)}%)
+          </span>
+        </div>
+      {/if}
+      {#if data.result.stop_loss_pct}
+        <div class="thesis-metric">
+          <span class="thesis-metric-label">Stop</span>
+          <span class="negative">{data.result.stop_loss_pct}%</span>
+        </div>
+      {/if}
+      {#if data.result.expected_returns}
+        <div class="thesis-metric">
+          <span class="thesis-metric-label">1M</span> {data.result.expected_returns?.oneMonth || data.result.expected_returns?.['1m'] || 'N/A'}
+          <span class="thesis-metric-label" style="margin-left: 8px;">3M</span> {data.result.expected_returns?.threeMonth || data.result.expected_returns?.['3m'] || 'N/A'}
+          <span class="thesis-metric-label" style="margin-left: 8px;">12M</span> {data.result.expected_returns?.twelveMonth || data.result.expected_returns?.['12m'] || 'N/A'}
+        </div>
+      {/if}
+      {#if data.result.trade_rationale}
+        <div class="thesis-metric">
+          <span class="thesis-metric-label">Rationale</span>
+          <span>{data.result.trade_rationale}</span>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 <!-- TradingView Chart -->
 <div class="card chart-card">
   <h3>Price Chart</h3>
@@ -672,6 +745,24 @@
 <p class="last-updated">Last updated: {formatDateTime(result.run_timestamp)}</p>
 
 <style>
+  .thesis-hero { margin-bottom: 1.5rem; }
+  .thesis-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
+  .thesis-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .lens-scores { display: flex; gap: 8px; }
+  .lens-box { background: var(--bg); border-radius: 6px; padding: 8px 12px; text-align: center; min-width: 60px; }
+  .lens-label { color: var(--text-muted); font-size: 0.6rem; text-transform: uppercase; }
+  .lens-value { font-weight: bold; font-size: 1.2rem; }
+  .thesis-body { margin-bottom: 1rem; }
+  .thesis-text { color: var(--text); font-size: 0.9rem; line-height: 1.5; margin-bottom: 0.5rem; }
+  .thesis-why-now { color: var(--yellow); font-size: 0.85rem; font-style: italic; }
+  .thesis-footer { display: flex; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+  .thesis-metric { background: var(--bg); padding: 6px 10px; border-radius: 4px; font-size: 0.75rem; }
+  .thesis-metric-label { color: var(--text-muted); margin-right: 4px; }
+  .tier-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+  .tier-momentum { background: var(--yellow); color: #000; }
+  .tier-quality { background: var(--blue); color: #fff; }
+  .theme-badge { background: rgba(168, 85, 247, 0.15); color: var(--purple); padding: 3px 8px; border-radius: 3px; font-size: 0.7rem; }
+
   .back-link {
     display: inline-block;
     margin-bottom: 1rem;
