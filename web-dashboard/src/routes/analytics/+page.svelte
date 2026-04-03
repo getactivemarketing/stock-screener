@@ -17,6 +17,39 @@
   let backtestMinAttention = '';
   let backtestLoading = false;
 
+  let tierPerformance: any[] = [];
+  let industryThemes: any[] = [];
+  let lensEffectiveness: any = { value: [], catalyst: [], emerging: [] };
+  let tierOverTime: any[] = [];
+
+  async function fetchTierPerformance() {
+    try {
+      const res = await fetch('/api/analytics?type=tier_performance');
+      if (res.ok) tierPerformance = await res.json();
+    } catch (e) { console.error('Tier performance fetch failed:', e); }
+  }
+
+  async function fetchIndustryThemes() {
+    try {
+      const res = await fetch('/api/analytics?type=industry_themes');
+      if (res.ok) industryThemes = await res.json();
+    } catch (e) { console.error('Industry themes fetch failed:', e); }
+  }
+
+  async function fetchLensEffectiveness() {
+    try {
+      const res = await fetch('/api/analytics?type=lens_effectiveness');
+      if (res.ok) lensEffectiveness = await res.json();
+    } catch (e) { console.error('Lens effectiveness fetch failed:', e); }
+  }
+
+  async function fetchTierOverTime() {
+    try {
+      const res = await fetch('/api/analytics?type=tier_over_time');
+      if (res.ok) tierOverTime = await res.json();
+    } catch (e) { console.error('Tier over time fetch failed:', e); }
+  }
+
   onMount(async () => {
     await Promise.all([
       fetchSummary(),
@@ -144,6 +177,10 @@
   <button class:active={activeTab === 'technical'} on:click={() => activeTab = 'technical'}>Technical Signals</button>
   <button class:active={activeTab === 'targets'} on:click={() => activeTab = 'targets'}>Target Accuracy</button>
   <button class:active={activeTab === 'backtest'} on:click={() => activeTab = 'backtest'}>Backtest</button>
+    <button class:active={activeTab === 'tiers'} on:click={() => { activeTab = 'tiers'; fetchTierPerformance(); }}>Tiers</button>
+    <button class:active={activeTab === 'themes'} on:click={() => { activeTab = 'themes'; fetchIndustryThemes(); }}>Themes</button>
+    <button class:active={activeTab === 'lens'} on:click={() => { activeTab = 'lens'; fetchLensEffectiveness(); }}>Lens</button>
+    <button class:active={activeTab === 'timeline'} on:click={() => { activeTab = 'timeline'; fetchTierOverTime(); }}>Timeline</button>
 </div>
 
 {#if loading}
@@ -636,6 +673,133 @@
       {/if}
     </div>
   {/if}
+
+  {#if activeTab === 'tiers'}
+    <div class="tier-comparison">
+      {#each tierPerformance as tier}
+        <div class="card tier-card" style="border-color: {tier.tier === 'MOMENTUM' ? 'var(--yellow)' : 'var(--blue)'}44;">
+          <h3 style="color: {tier.tier === 'MOMENTUM' ? 'var(--yellow)' : 'var(--blue)'}; margin-bottom: 1rem;">{tier.tier}</h3>
+          <div class="tier-stats">
+            <div><span class="stat-label-sm">Picks</span><br><strong>{tier.picks}</strong></div>
+            <div><span class="stat-label-sm">Win Rate</span><br><strong class={Number(tier.win_rate_1d) >= 50 ? 'positive' : 'negative'}>{tier.win_rate_1d ?? '—'}%</strong></div>
+            <div><span class="stat-label-sm">Avg Return</span><br><strong class={Number(tier.avg_return_1d) >= 0 ? 'positive' : 'negative'}>{tier.avg_return_1d ?? '—'}%</strong></div>
+            <div><span class="stat-label-sm">Avg Max Gain</span><br><strong>{tier.avg_max_gain ?? '—'}%</strong></div>
+            <div><span class="stat-label-sm">Avg Drawdown</span><br><strong>{tier.avg_max_drawdown ?? '—'}%</strong></div>
+            <div><span class="stat-label-sm">Runners</span><br><strong>{tier.runners}</strong></div>
+            <div><span class="stat-label-sm">Value</span><br><strong>{tier.value_plays}</strong></div>
+            <div><span class="stat-label-sm">Both</span><br><strong>{tier.both_plays}</strong></div>
+          </div>
+        </div>
+      {/each}
+      {#if tierPerformance.length === 0}
+        <p class="no-data">No tier data yet. Run the pipeline with the dual-tier system to populate.</p>
+      {/if}
+    </div>
+  {/if}
+
+  {#if activeTab === 'themes'}
+    <div class="card">
+      <h3 style="margin-bottom: 1rem; font-size: 0.9rem;">Industry Theme Performance</h3>
+      {#if industryThemes.length > 0}
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Theme</th>
+                <th>Picks</th>
+                <th>Win Rate</th>
+                <th>Avg Return</th>
+                <th>Avg Max Gain</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each industryThemes as theme}
+                <tr>
+                  <td><span class="theme-badge">{theme.industry_theme}</span></td>
+                  <td>{theme.picks}</td>
+                  <td class={Number(theme.win_rate) >= 50 ? 'positive' : 'negative'}>{theme.win_rate}%</td>
+                  <td class={Number(theme.avg_return) >= 0 ? 'positive' : 'negative'}>{theme.avg_return}%</td>
+                  <td>{theme.avg_max_gain}%</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {:else}
+        <p class="no-data">No theme data yet.</p>
+      {/if}
+    </div>
+  {/if}
+
+  {#if activeTab === 'lens'}
+    <div class="lens-grid">
+      {#each [
+        { name: 'Value Score', data: lensEffectiveness.value, color: 'var(--green)' },
+        { name: 'Catalyst Score', data: lensEffectiveness.catalyst, color: 'var(--blue)' },
+        { name: 'Emerging Industry', data: lensEffectiveness.emerging, color: 'var(--purple)' }
+      ] as lens}
+        <div class="card">
+          <h3 style="color: {lens.color}; margin-bottom: 1rem; font-size: 0.9rem;">{lens.name}</h3>
+          {#if lens.data && lens.data.length > 0}
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr><th>Range</th><th>Tier</th><th>Picks</th><th>Win Rate</th><th>Avg Return</th></tr>
+                </thead>
+                <tbody>
+                  {#each lens.data as row}
+                    <tr>
+                      <td>{row.score_range}</td>
+                      <td><span class="tier-badge-sm tier-{row.tier?.toLowerCase()}">{row.tier}</span></td>
+                      <td>{row.picks}</td>
+                      <td class={Number(row.win_rate) >= 50 ? 'positive' : 'negative'}>{row.win_rate}%</td>
+                      <td class={Number(row.avg_return) >= 0 ? 'positive' : 'negative'}>{row.avg_return}%</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {:else}
+            <p class="no-data">No data yet.</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  {#if activeTab === 'timeline'}
+    <div class="card">
+      <h3 style="margin-bottom: 1rem; font-size: 0.9rem;">Tier Distribution Per Run</h3>
+      {#if tierOverTime.length > 0}
+        <div class="timeline-chart">
+          {#each tierOverTime.slice(0, 30) as run}
+            <div class="timeline-bar">
+              <div class="timeline-date">{new Date(run.run_timestamp).toLocaleDateString()}</div>
+              <div class="bar-container">
+                {#if run.momentum_count}
+                  <div class="bar bar-momentum" style="width: {(run.momentum_count / Math.max(run.tickers_scanned || 1, 1)) * 100}%;">
+                    {run.momentum_count}
+                  </div>
+                {/if}
+                {#if run.quality_count}
+                  <div class="bar bar-quality" style="width: {(run.quality_count / Math.max(run.tickers_scanned || 1, 1)) * 100}%;">
+                    {run.quality_count}
+                  </div>
+                {/if}
+              </div>
+              <div class="timeline-total">{run.tickers_scanned}</div>
+            </div>
+          {/each}
+        </div>
+        <div style="display: flex; gap: 1rem; margin-top: 0.75rem; font-size: 0.7rem; color: var(--text-muted);">
+          <span><span style="display:inline-block;width:12px;height:12px;background:var(--yellow);border-radius:2px;vertical-align:middle;margin-right:4px;"></span> Momentum</span>
+          <span><span style="display:inline-block;width:12px;height:12px;background:var(--blue);border-radius:2px;vertical-align:middle;margin-right:4px;"></span> Quality</span>
+        </div>
+      {:else}
+        <p class="no-data">No timeline data yet.</p>
+      {/if}
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -937,6 +1101,28 @@
     cursor: not-allowed;
   }
 
+  .tier-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .tier-card h3 { font-size: 1rem; }
+  .tier-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; }
+  .stat-label-sm { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; }
+
+  .theme-badge { background: rgba(168, 85, 247, 0.15); color: var(--purple); padding: 3px 8px; border-radius: 3px; font-size: 0.75rem; }
+
+  .lens-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+
+  .tier-badge-sm { padding: 1px 6px; border-radius: 3px; font-size: 0.65rem; font-weight: 600; }
+  .tier-momentum { background: var(--yellow); color: #000; }
+  .tier-quality { background: var(--blue); color: #fff; }
+
+  .timeline-chart { display: flex; flex-direction: column; gap: 4px; }
+  .timeline-bar { display: flex; align-items: center; gap: 8px; }
+  .timeline-date { font-size: 0.7rem; color: var(--text-muted); min-width: 80px; }
+  .bar-container { flex: 1; display: flex; height: 24px; border-radius: 4px; overflow: hidden; background: var(--bg); }
+  .bar { display: flex; align-items: center; justify-content: center; font-size: 0.65rem; font-weight: 600; min-width: 20px; }
+  .bar-momentum { background: var(--yellow); color: #000; }
+  .bar-quality { background: var(--blue); color: #fff; }
+  .timeline-total { font-size: 0.7rem; color: var(--text-muted); min-width: 30px; text-align: right; }
+
   @media (max-width: 768px) {
     .stats-grid,
     .target-stats-grid,
@@ -970,5 +1156,9 @@
     .tabs {
       flex-wrap: wrap;
     }
+
+    .tier-comparison { grid-template-columns: 1fr; }
+    .lens-grid { grid-template-columns: 1fr; }
+    .tier-stats { grid-template-columns: repeat(2, 1fr); }
   }
 </style>
