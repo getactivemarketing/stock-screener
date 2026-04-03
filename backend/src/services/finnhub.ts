@@ -1,6 +1,6 @@
 import { fetchWithRetry, rateLimiters } from '../lib/http.js';
 import { config } from '../lib/config.js';
-import type { FinnhubQuote, FinnhubProfile, FundamentalData, PriceData } from '../types/index.js';
+import type { FinnhubQuote, FinnhubProfile, FundamentalData, PriceData, ClassifierEnrichment } from '../types/index.js';
 
 const BASE_URL = 'https://finnhub.io/api/v1';
 
@@ -307,10 +307,96 @@ export async function fetchRecommendations(ticker: string): Promise<FinnhubRecom
   }
 }
 
+interface FinnhubPriceTarget {
+  lastUpdated: string;
+  symbol: string;
+  targetHigh: number;
+  targetLow: number;
+  targetMean: number;
+  targetMedian: number;
+}
+
+export async function fetchPriceTarget(ticker: string): Promise<FinnhubPriceTarget | null> {
+  try {
+    const url = `${BASE_URL}/stock/price-target?symbol=${ticker}&token=${config.finnhubApiKey}`;
+    const data = await fetchWithRetry<FinnhubPriceTarget>(url, {}, rateLimiters.finnhub);
+    return data?.targetMean ? data : null;
+  } catch (error) {
+    console.error(`Finnhub price target failed for ${ticker}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch all classifier enrichment data for a ticker in parallel.
+ * Wraps analyst ratings, earnings, and news into one call.
+ * Any individual sub-call can fail without failing the whole enrichment.
+ */
+export async function enrichForClassifier(
+  ticker: string,
+  existingHeadlines?: string[]
+): Promise<ClassifierEnrichment> {
+  const [recommendations, priceTarget, earnings, news] = await Promise.all([
+    fetchRecommendations(ticker).catch(() => null),
+    fetchPriceTarget(ticker).catch(() => null),
+    fetchEarningsCalendar(ticker).catch(() => [] as FinnhubEarnings[]),
+    existingHeadlines && existingHeadlines.length > 0
+      ? Promise.resolve(existingHeadlines)
+      : fetchNews(ticker).then(articles => articles.slice(0, 5).map(a => a.headline)).catch(() => [] as string[]),
+  ]);
+
+  // Build analyst ratings summary
+  let analystRatings: ClassifierEnrichment['analystRatings'] = null;
+  if (recommendations || priceTarget) {
+    const parts: string[] = [];
+    if (recommendations) {
+      if (recommendations.strongBuy) parts.push(`Strong Buy: ${recommendations.strongBuy}`);
+      if (recommendations.buy) parts.push(`Buy: ${recommendations.buy}`);
+      if (recommendations.hold) parts.push(`Hold: ${recommendations.hold}`);
+      if (recommendations.sell) parts.push(`Sell: ${recommendations.sell}`);
+      if (recommendations.strongSell) parts.push(`Strong Sell: ${recommendations.strongSell}`);
+    }
+    analystRatings = {
+      summary: parts.length > 0 ? parts.join(', ') : 'No analyst coverage',
+      meanTarget: priceTarget?.targetMean ?? null,
+      highTarget: priceTarget?.targetHigh ?? null,
+      lowTarget: priceTarget?.targetLow ?? null,
+    };
+  }
+
+  // Build earnings info
+  let earningsInfo: ClassifierEnrichment['earnings'] = null;
+  const earningsArray = Array.isArray(earnings) ? earnings : [];
+  if (earningsArray.length > 0) {
+    const now = new Date();
+    const upcoming = earningsArray.find(e => new Date(e.date) >= now);
+
+    // Beat rate from last 4 quarters with actual data
+    const historical = earningsArray
+      .filter(e => e.epsActual !== null && e.epsEstimate !== null)
+      .slice(0, 4);
+    const beats = historical.filter(e => (e.epsActual ?? 0) > (e.epsEstimate ?? 0)).length;
+    const beatRate = historical.length > 0 ? (beats / historical.length) * 100 : null;
+
+    earningsInfo = {
+      nextDate: upcoming?.date ?? null,
+      daysToEarnings: upcoming ? Math.ceil((new Date(upcoming.date).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : null,
+      epsEstimate: upcoming?.epsEstimate ?? null,
+      earningsBeatRate: beatRate !== null ? Math.round(beatRate) : null,
+    };
+  }
+
+  // News headlines
+  const newsArray = Array.isArray(news) ? news : [];
+  const newsHeadlines = newsArray.length > 0 ? newsArray.slice(0, 5) : null;
+
+  return { analystRatings, earnings: earningsInfo, newsHeadlines };
+}
+
 /**
  * Export types for use in other modules
  */
-export type { FinnhubNews, FinnhubInsiderTransaction, FinnhubEarnings, FinnhubRecommendation };
+export type { FinnhubNews, FinnhubInsiderTransaction, FinnhubEarnings, FinnhubRecommendation, FinnhubPriceTarget };
 
 export default {
   fetchQuote,
@@ -323,4 +409,6 @@ export default {
   fetchInsiderTransactions,
   fetchEarningsCalendar,
   fetchRecommendations,
+  fetchPriceTarget,
+  enrichForClassifier,
 };
