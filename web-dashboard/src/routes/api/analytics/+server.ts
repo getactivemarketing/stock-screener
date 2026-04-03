@@ -23,6 +23,14 @@ export const GET: RequestHandler = async ({ url }) => {
         return json(await getTargetAccuracy());
       case 'technical':
         return json(await getTechnicalSignalAccuracy());
+      case 'tier_performance':
+        return json(await getTierPerformance());
+      case 'industry_themes':
+        return json(await getIndustryThemes());
+      case 'lens_effectiveness':
+        return json(await getLensEffectiveness());
+      case 'tier_over_time':
+        return json(await getTierOverTime());
       default:
         return json({ error: 'Unknown type' }, { status: 400 });
     }
@@ -299,5 +307,102 @@ async function getTechnicalSignalAccuracy() {
     ORDER BY avg_return_5d DESC
   `);
 
+  return results;
+}
+
+async function getTierPerformance() {
+  const results = await query(`
+    SELECT
+      tier,
+      COUNT(*) as picks,
+      COUNT(CASE WHEN return_1d > 0 THEN 1 END) as wins_1d,
+      ROUND(100.0 * COUNT(CASE WHEN return_1d > 0 THEN 1 END) / NULLIF(COUNT(return_1d), 0), 1) as win_rate_1d,
+      ROUND(AVG(return_1d)::numeric, 2) as avg_return_1d,
+      ROUND(AVG(max_gain_5d)::numeric, 2) as avg_max_gain,
+      ROUND(AVG(max_drawdown_5d)::numeric, 2) as avg_max_drawdown,
+      COUNT(CASE WHEN classification = 'runner' THEN 1 END) as runners,
+      COUNT(CASE WHEN classification = 'value' THEN 1 END) as value_plays,
+      COUNT(CASE WHEN classification = 'both' THEN 1 END) as both_plays
+    FROM scan_results
+    WHERE return_1d IS NOT NULL AND tier IS NOT NULL
+    GROUP BY tier
+  `);
+  return results;
+}
+
+async function getIndustryThemes() {
+  const results = await query(`
+    SELECT
+      industry_theme,
+      COUNT(*) as picks,
+      COUNT(CASE WHEN return_1d > 0 THEN 1 END) as wins,
+      ROUND(100.0 * COUNT(CASE WHEN return_1d > 0 THEN 1 END) / NULLIF(COUNT(return_1d), 0), 1) as win_rate,
+      ROUND(AVG(return_1d)::numeric, 2) as avg_return,
+      ROUND(AVG(max_gain_5d)::numeric, 2) as avg_max_gain
+    FROM scan_results
+    WHERE industry_theme IS NOT NULL AND return_1d IS NOT NULL
+    GROUP BY industry_theme
+    ORDER BY picks DESC
+  `);
+  return results;
+}
+
+async function getLensEffectiveness() {
+  const value = await query(`
+    SELECT
+      CASE WHEN value_score >= 7 THEN 'High (7-10)'
+           WHEN value_score >= 4 THEN 'Mid (4-6)'
+           ELSE 'Low (0-3)' END as score_range,
+      tier,
+      COUNT(*) as picks,
+      ROUND(100.0 * COUNT(CASE WHEN return_1d > 0 THEN 1 END) / NULLIF(COUNT(return_1d), 0), 1) as win_rate,
+      ROUND(AVG(return_1d)::numeric, 2) as avg_return
+    FROM scan_results
+    WHERE value_score IS NOT NULL AND return_1d IS NOT NULL
+    GROUP BY score_range, tier
+    ORDER BY score_range DESC, tier
+  `);
+
+  const catalyst = await query(`
+    SELECT
+      CASE WHEN catalyst_score >= 7 THEN 'High (7-10)'
+           WHEN catalyst_score >= 4 THEN 'Mid (4-6)'
+           ELSE 'Low (0-3)' END as score_range,
+      tier,
+      COUNT(*) as picks,
+      ROUND(100.0 * COUNT(CASE WHEN return_1d > 0 THEN 1 END) / NULLIF(COUNT(return_1d), 0), 1) as win_rate,
+      ROUND(AVG(return_1d)::numeric, 2) as avg_return
+    FROM scan_results
+    WHERE catalyst_score IS NOT NULL AND return_1d IS NOT NULL
+    GROUP BY score_range, tier
+    ORDER BY score_range DESC, tier
+  `);
+
+  const emerging = await query(`
+    SELECT
+      CASE WHEN emerging_industry_score >= 7 THEN 'High (7-10)'
+           WHEN emerging_industry_score >= 4 THEN 'Mid (4-6)'
+           ELSE 'Low (0-3)' END as score_range,
+      tier,
+      COUNT(*) as picks,
+      ROUND(100.0 * COUNT(CASE WHEN return_1d > 0 THEN 1 END) / NULLIF(COUNT(return_1d), 0), 1) as win_rate,
+      ROUND(AVG(return_1d)::numeric, 2) as avg_return
+    FROM scan_results
+    WHERE emerging_industry_score IS NOT NULL AND return_1d IS NOT NULL
+    GROUP BY score_range, tier
+    ORDER BY score_range DESC, tier
+  `);
+
+  return { value, catalyst, emerging };
+}
+
+async function getTierOverTime() {
+  const results = await query(`
+    SELECT run_timestamp, momentum_count, quality_count, tickers_scanned
+    FROM scan_runs
+    WHERE status = 'completed' AND momentum_count IS NOT NULL
+    ORDER BY run_timestamp DESC
+    LIMIT 100
+  `);
   return results;
 }
