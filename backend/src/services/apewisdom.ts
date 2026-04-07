@@ -22,9 +22,14 @@ export async function fetchTrendingStocks(
       rateLimiters.apewisdom
     );
 
+    const source: SentimentData['source'] =
+      filter === 'pennystocks' ? 'apewisdom-penny'
+      : filter === 'wallstreetbets' ? 'apewisdom-wsb'
+      : 'apewisdom-all';
+
     return response.results.map((item) => ({
       ticker: item.ticker,
-      source: 'apewisdom' as const,
+      source,
       mentions: item.mentions || 0,
       sentiment: calculateSentimentFromRank(item.rank, item.mentions),
       momentum: calculateMomentum(item.rank, item.rank_24h_ago),

@@ -24,10 +24,16 @@ export function calculateAttentionScore(sentiment: MergedSentiment): number {
   // avgSentiment ranges from -100 to 100, normalize to 0-25
   const sentimentScore = ((avgSentiment + 100) / 200) * 25;
 
-  // Rank bonus from ApeWisdom (0-20 points)
+  // Rank bonus from ApeWisdom (0-20 points). Take the best rank across any ApeWisdom filter.
   let rankScore = 0;
-  if (sources.apewisdom?.rank) {
-    const rank = sources.apewisdom.rank;
+  const apeRanks = [
+    sources['apewisdom-penny']?.rank,
+    sources['apewisdom-all']?.rank,
+    sources['apewisdom-wsb']?.rank,
+  ].filter((r): r is number => typeof r === 'number' && r > 0);
+  const bestApeRank = apeRanks.length ? Math.min(...apeRanks) : undefined;
+  if (bestApeRank) {
+    const rank = bestApeRank;
     if (rank <= 10) rankScore = 20;
     else if (rank <= 25) rankScore = 15;
     else if (rank <= 50) rankScore = 10;

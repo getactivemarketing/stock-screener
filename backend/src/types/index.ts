@@ -1,7 +1,7 @@
 // Sentiment data from aggregators
 export interface SentimentData {
   ticker: string;
-  source: 'swaggy' | 'apewisdom' | 'altindex' | 'stocktwits' | 'finviz' | 'reddit-penny';
+  source: 'swaggy' | 'apewisdom-all' | 'apewisdom-penny' | 'apewisdom-wsb' | 'altindex' | 'stocktwits' | 'finviz';
   mentions: number;
   sentiment: number; // -100 to 100
   momentum?: number; // ratio vs previous period
@@ -19,11 +19,12 @@ export interface MergedSentiment {
   isPennyStock?: boolean; // Flag for penny stock prioritization
   sources: {
     swaggy?: SentimentData;
-    apewisdom?: SentimentData;
+    'apewisdom-all'?: SentimentData;
+    'apewisdom-penny'?: SentimentData;
+    'apewisdom-wsb'?: SentimentData;
     altindex?: SentimentData;
     stocktwits?: SentimentData;
     finviz?: SentimentData;
-    'reddit-penny'?: SentimentData;
   };
 }
 

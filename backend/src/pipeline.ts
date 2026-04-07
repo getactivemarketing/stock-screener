@@ -11,7 +11,6 @@ import technicals, { type TechnicalIndicators } from './services/technicals.js';
 import { fetchSwaggyTrending } from './services/swaggy.js';
 import { fetchStocktwitsTrending, fetchStocktwitsActive } from './services/stocktwits.js';
 import { fetchAllFinvizSignals } from './services/finviz.js';
-import { fetchRedditPennyStocks } from './services/reddit.js';
 import { universeConfig } from './lib/config.js';
 import { sleep } from './lib/http.js';
 import * as trader from './services/trader.js';
@@ -206,12 +205,6 @@ async function fetchAllSentimentData(): Promise<SentimentData[]> {
   }
   console.log(`    Found ${finvizData.length} entries from Finviz`);
 
-  // Reddit Penny Stock Subreddits - direct scraping
-  console.log('  - Fetching from Reddit penny stock subreddits...');
-  const redditPennyData = await fetchRedditPennyStocks();
-  results.push(...redditPennyData);
-  console.log(`    Found ${redditPennyData.length} entries from Reddit penny subs`);
-
   return results;
 }
 
@@ -266,8 +259,10 @@ function mergeSentimentByTicker(data: SentimentData[]): Record<string, MergedSen
 
     m.avgSentiment = sentimentCount > 0 ? totalSentiment / sentimentCount : 0;
 
-    // Mark as penny stock if found in penny-focused sources
-    m.isPennyStock = !!(m.sources['reddit-penny'] || m.sources.apewisdom?.rank);
+    // Mark as penny stock if found in penny-focused sources.
+    // Finviz screeners are hardcoded to price < $10, so every Finviz ticker is a penny candidate.
+    // apewisdom-penny = ApeWisdom's /pennystocks filter.
+    m.isPennyStock = !!(m.sources['apewisdom-penny'] || m.sources.finviz);
   }
 
   return merged;
@@ -303,9 +298,14 @@ function selectTickersWithDualTier(
   const momentumCandidates = allTickers
     .filter(([_, data]) => data.isPennyStock && data.avgSentiment >= 40)
     .sort((a, b) => {
-      const aReddit = a[1].sources['reddit-penny']?.mentions || 0;
-      const bReddit = b[1].sources['reddit-penny']?.mentions || 0;
-      if (bReddit !== aReddit) return bReddit - aReddit;
+      // Prefer stronger penny signals: Finviz signal count (each ticker only hits
+      // one source entry today, so this is 0/1) + ApeWisdom penny mentions.
+      const aFinviz = a[1].sources.finviz ? 1 : 0;
+      const bFinviz = b[1].sources.finviz ? 1 : 0;
+      if (bFinviz !== aFinviz) return bFinviz - aFinviz;
+      const aPenny = a[1].sources['apewisdom-penny']?.mentions || 0;
+      const bPenny = b[1].sources['apewisdom-penny']?.mentions || 0;
+      if (bPenny !== aPenny) return bPenny - aPenny;
       return b[1].totalMentions - a[1].totalMentions;
     });
 
@@ -730,8 +730,15 @@ async function saveResults(
         sentiment.sources.swaggy?.mentions || null,
         sentiment.sources.swaggy?.sentiment || null,
         sentiment.sources.swaggy?.momentum || null,
-        sentiment.sources.apewisdom?.rank || null,
-        sentiment.sources.apewisdom?.mentions || null,
+        // Legacy apewisdom_* columns: prefer penny-filter data, then all-stocks, then wsb.
+        sentiment.sources['apewisdom-penny']?.rank
+          ?? sentiment.sources['apewisdom-all']?.rank
+          ?? sentiment.sources['apewisdom-wsb']?.rank
+          ?? null,
+        sentiment.sources['apewisdom-penny']?.mentions
+          ?? sentiment.sources['apewisdom-all']?.mentions
+          ?? sentiment.sources['apewisdom-wsb']?.mentions
+          ?? null,
         sentiment.sources.altindex?.sentiment || null,
         sentiment.totalMentions,
         sentiment.avgSentiment,
@@ -800,7 +807,7 @@ async function saveResults(
         cd?.emergingIndustryScore ?? null,
         cd?.thesis ?? null,
         cd?.edgeWhyNow ?? null,
-        cd?.industryTheme ?? null,
+        cd?.industryTheme ? cd.industryTheme.slice(0, 100) : null,
         cd?.stopLossPct ?? null,
         cd ? JSON.stringify(cd.expectedReturns) : null,
         // Enrichment columns
