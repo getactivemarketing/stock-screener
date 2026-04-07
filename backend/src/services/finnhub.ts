@@ -133,25 +133,15 @@ export async function fetchMetrics(ticker: string): Promise<FinnhubMetrics['metr
  * Fetch historical candles
  */
 export async function fetchCandles(
-  ticker: string,
-  resolution: 'D' | 'W' | 'M' = 'D',
-  from: number,
-  to: number
+  _ticker: string,
+  _resolution: 'D' | 'W' | 'M' = 'D',
+  _from: number,
+  _to: number
 ): Promise<FinnhubCandle | null> {
-  try {
-    const url = `${BASE_URL}/stock/candle?symbol=${ticker}&resolution=${resolution}&from=${from}&to=${to}&token=${config.finnhubApiKey}`;
-    const data = await fetchWithRetry<FinnhubCandle>(url, {}, rateLimiters.finnhub);
-
-    if (data.s !== 'ok') {
-      console.warn(`No candle data for ${ticker}`);
-      return null;
-    }
-
-    return data;
-  } catch (error) {
-    console.error(`Finnhub candles failed for ${ticker}:`, error);
-    return null;
-  }
+  // /stock/candle is a paid endpoint on Finnhub and 403s on our free plan.
+  // technicals.ts has an Alpha Vantage fallback that handles the null return.
+  // Short-circuit to avoid ~15s of retry noise per ticker per run.
+  return null;
 }
 
 /**
@@ -316,15 +306,11 @@ interface FinnhubPriceTarget {
   targetMedian: number;
 }
 
-export async function fetchPriceTarget(ticker: string): Promise<FinnhubPriceTarget | null> {
-  try {
-    const url = `${BASE_URL}/stock/price-target?symbol=${ticker}&token=${config.finnhubApiKey}`;
-    const data = await fetchWithRetry<FinnhubPriceTarget>(url, {}, rateLimiters.finnhub);
-    return data?.targetMean ? data : null;
-  } catch (error) {
-    console.error(`Finnhub price target failed for ${ticker}:`, error);
-    return null;
-  }
+export async function fetchPriceTarget(_ticker: string): Promise<FinnhubPriceTarget | null> {
+  // /stock/price-target is a paid endpoint on Finnhub and 403s on our free plan.
+  // Callers (enrichForClassifier) already handle null by falling back to "No analyst coverage".
+  // TODO: optionally replace with Yahoo Finance quoteSummary.financialData.targetMeanPrice.
+  return null;
 }
 
 /**
