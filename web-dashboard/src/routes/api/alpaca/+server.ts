@@ -122,6 +122,39 @@ export const GET: RequestHandler = async ({ url }) => {
       })));
     }
 
+    if (type === 'portfolio-history') {
+      const period = url.searchParams.get('period') || '3M';
+      const timeframe = url.searchParams.get('timeframe') || '1D';
+      const response = await fetch(
+        `${ALPACA_PAPER_API}/v2/account/portfolio/history?period=${period}&timeframe=${timeframe}&extended_hours=false`,
+        { headers: getHeaders() }
+      );
+
+      if (!response.ok) {
+        console.error('Alpaca portfolio-history error:', await response.text());
+        return json({ days: [] });
+      }
+
+      const raw = await response.json();
+      // Alpaca returns parallel arrays; flatten into per-day objects and filter out zero-equity placeholders.
+      const days: Array<{ date: string; equity: number; profitLoss: number; profitLossPct: number }> = [];
+      const ts: number[] = raw.timestamp || [];
+      const eq: number[] = raw.equity || [];
+      const pl: number[] = raw.profit_loss || [];
+      const plPct: number[] = raw.profit_loss_pct || [];
+      for (let i = 0; i < ts.length; i++) {
+        if (!eq[i]) continue;
+        const d = new Date(ts[i] * 1000);
+        days.push({
+          date: d.toISOString().slice(0, 10),
+          equity: eq[i],
+          profitLoss: pl[i] ?? 0,
+          profitLossPct: (plPct[i] ?? 0) * 100,
+        });
+      }
+      return json({ days, baseValue: raw.base_value ?? null });
+    }
+
     if (type === 'orders') {
       const response = await fetch(`${ALPACA_PAPER_API}/v2/orders?status=all&limit=50`, {
         headers: getHeaders(),
