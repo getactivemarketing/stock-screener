@@ -435,9 +435,6 @@ interface UnifiedScoringInputs {
   enrichment: ClassifierEnrichment | undefined;
   technicals: TechnicalIndicators | null;
   finvizHits: number;  // number of distinct Finviz sub-screens this ticker appeared in
-  insiderLargeBuy90d: boolean;
-  insiderAnyBuy90d: boolean;
-  insiderNetSelling: boolean;
 }
 
 /**
@@ -516,7 +513,11 @@ export function calculateValueScore(input: UnifiedScoringInputs): number {
  * Catalyst score (0-100). Answer: is something about to happen?
  */
 export function calculateCatalystScoreV2(input: UnifiedScoringInputs): number {
-  const { enrichment, insiderLargeBuy90d, insiderAnyBuy90d, insiderNetSelling } = input;
+  const { enrichment } = input;
+  const insider = enrichment?.insiderActivity;
+  const insiderLargeBuy90d = insider?.largeBuy90d ?? false;
+  const insiderAnyBuy90d = insider?.anyBuy90d ?? false;
+  const insiderNetSelling = insider?.netSelling ?? false;
   let score = 0;
 
   // Days to next earnings (0-30)
@@ -703,8 +704,8 @@ export function classifyUnified(
   scores: ComponentScores,
   tradeable: boolean
 ): 'BUY' | 'WATCH' | 'AVOID' {
-  if (scores.composite < 50 || scores.risk > 60) return 'AVOID';
-  if (scores.composite >= 65 && scores.risk <= 45 && tradeable) return 'BUY';
+  if (scores.composite < 35 || scores.risk > 60) return 'AVOID';
+  if (scores.composite >= 55 && scores.risk <= 45 && tradeable) return 'BUY';
   return 'WATCH';
 }
 

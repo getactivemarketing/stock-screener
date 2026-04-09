@@ -325,6 +325,11 @@ export interface ClassifierEnrichment {
     earningsBeatRate: number | null;
   } | null;
   newsHeadlines: string[] | null;
+  insiderActivity: {
+    largeBuy90d: boolean;   // any single buy > $100k in last 90d
+    anyBuy90d: boolean;     // any buy in last 90d
+    netSelling: boolean;    // net share change < 0 over last 90d
+  } | null;
 }
 
 export interface DualTierClassificationResult {

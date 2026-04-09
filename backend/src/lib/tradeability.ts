@@ -52,9 +52,20 @@ export function evaluateTradeability(inputs: TradeabilityInputs): TradeabilityRe
     failures.push('no_analyst_coverage');
   }
 
-  // Gate 5: US-listed, not ETF/ADR
-  const country = (fundamentals.country || '').toUpperCase();
-  if (country && country !== 'US') {
+  // Gate 5: US-listed exchange.
+  // Finnhub returns verbose exchange names like "NASDAQ NMS - GLOBAL MARKET" or
+  // "NEW YORK STOCK EXCHANGE, INC." for US listings, and "TAIWAN STOCK EXCHANGE" /
+  // "NYSE EURONEXT - EURONEXT AMSTERDAM" for foreign home exchanges (even for ADRs).
+  // ADRs cannot be reliably distinguished from foreign listings via Finnhub alone.
+  const exchange = (fundamentals.exchange || '').toUpperCase();
+  const isUsExchange =
+    exchange.startsWith('NASDAQ') ||
+    exchange.startsWith('NEW YORK STOCK EXCHANGE') ||
+    exchange.startsWith('NYSE ARCA') ||
+    exchange.startsWith('NYSE AMERICAN') ||
+    exchange.startsWith('BATS') ||
+    exchange.startsWith('CBOE');
+  if (exchange && !isUsExchange) {
     failures.push('not_us_listed');
   }
   // ETF/trust detection: Finnhub profile2 leaves industry blank for ETFs; also check name

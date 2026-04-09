@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "pipeline": "tsx src/pipeline.ts",
+    "pipeline": "tsx src/pipeline-unified.ts",
+    "pipeline-legacy": "tsx src/pipeline.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "returns": "tsx src/return-tracker.ts"
   },

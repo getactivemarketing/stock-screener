@@ -322,13 +322,14 @@ export async function enrichForClassifier(
   ticker: string,
   existingHeadlines?: string[]
 ): Promise<ClassifierEnrichment> {
-  const [recommendations, priceTarget, earnings, news] = await Promise.all([
+  const [recommendations, priceTarget, earnings, news, insiderTxns] = await Promise.all([
     fetchRecommendations(ticker).catch(() => null),
     fetchPriceTarget(ticker).catch(() => null),
     fetchEarningsCalendar(ticker).catch(() => [] as FinnhubEarnings[]),
     existingHeadlines && existingHeadlines.length > 0
       ? Promise.resolve(existingHeadlines)
       : fetchNews(ticker).then(articles => articles.slice(0, 5).map(a => a.headline)).catch(() => [] as string[]),
+    fetchInsiderTransactions(ticker).catch(() => [] as FinnhubInsiderTransaction[]),
   ]);
 
   // Build analyst ratings summary
@@ -376,7 +377,23 @@ export async function enrichForClassifier(
   const newsArray = Array.isArray(news) ? news : [];
   const newsHeadlines = newsArray.length > 0 ? newsArray.slice(0, 5) : null;
 
-  return { analystRatings, earnings: earningsInfo, newsHeadlines };
+  // Insider activity (last 90 days)
+  let insiderActivity: ClassifierEnrichment['insiderActivity'] = null;
+  const txns = Array.isArray(insiderTxns) ? insiderTxns : [];
+  if (txns.length > 0) {
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    const recent = txns.filter(t => {
+      const d = new Date(t.transactionDate || t.filingDate).getTime();
+      return isFinite(d) && d >= cutoff;
+    });
+    const buys = recent.filter(t => t.change > 0);
+    const largeBuy90d = buys.some(t => t.change * (t.transactionPrice || 0) > 100_000);
+    const anyBuy90d = buys.length > 0;
+    const netShares = recent.reduce((sum, t) => sum + (t.change || 0), 0);
+    insiderActivity = { largeBuy90d, anyBuy90d, netSelling: netShares < 0 };
+  }
+
+  return { analystRatings, earnings: earningsInfo, newsHeadlines, insiderActivity };
 }
 
 /**

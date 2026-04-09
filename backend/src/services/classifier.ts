@@ -9,6 +9,9 @@ import type {
   ClassifierEnrichment,
   Tier,
   DualTierClassificationResult,
+  ComponentScores,
+  UnifiedClassification,
+  YahooQuoteSummary,
 } from '../types/index.js';
 
 // Perplexity uses OpenAI-compatible API
@@ -258,6 +261,169 @@ function formatMarketCap(value: number): string {
   return value.toString();
 }
 
+// ── Unified Classifier (2026-04-08) ─────────────────────
+
+interface UnifiedContext {
+  ticker: string;
+  price: PriceData;
+  fundamentals: FundamentalData;
+  yahoo: YahooQuoteSummary | null;
+  enrichment?: ClassifierEnrichment;
+  scores: ComponentScores;
+}
+
+export async function generateUnifiedAnalysis(
+  ctx: UnifiedContext
+): Promise<UnifiedClassification> {
+  const prompt = buildUnifiedPrompt(ctx);
+  try {
+    const response = await perplexity.chat.completions.create({
+      model: 'sonar',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a professional equity analyst focused on value + catalyst setups. Respond only with valid JSON, no markdown or explanation.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 1200,
+      temperature: 0.2,
+    });
+    const text = response.choices[0]?.message?.content || '';
+    return parseUnifiedResponse(text, ctx.scores);
+  } catch (error) {
+    console.error(`Perplexity unified analysis failed for ${ctx.ticker}:`, error);
+    return parseUnifiedResponse('{}', ctx.scores);
+  }
+}
+
+function buildUnifiedPrompt(ctx: UnifiedContext): string {
+  const { ticker, price, fundamentals, yahoo, enrichment, scores } = ctx;
+
+  const analystLine = yahoo?.targetMeanPrice
+    ? `Mean target $${yahoo.targetMeanPrice.toFixed(2)} (${yahoo.numberOfAnalystOpinions} analysts), rec mean ${yahoo.recommendationMean ?? 'n/a'}`
+    : 'No analyst coverage';
+
+  const dte = enrichment?.earnings?.daysToEarnings;
+  const earningsLine = dte != null
+    ? `${enrichment?.earnings?.nextDate} (${dte} days away, beat rate ${enrichment?.earnings?.earningsBeatRate ?? 'n/a'}%)`
+    : 'No upcoming earnings within 90 days';
+
+  const insider = enrichment?.insiderActivity;
+  const insiderLine = insider
+    ? `Large buy 90d: ${insider.largeBuy90d}, any buy 90d: ${insider.anyBuy90d}, net selling: ${insider.netSelling}`
+    : 'No insider data';
+
+  const headlines = enrichment?.newsHeadlines?.length
+    ? enrichment.newsHeadlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
+    : 'No recent news';
+
+  const upsidePct = yahoo?.targetMeanPrice && price.price > 0
+    ? (((yahoo.targetMeanPrice - price.price) / price.price) * 100).toFixed(1) + '%'
+    : 'n/a';
+
+  return `You are evaluating a stock for a systematic value + catalyst trading strategy. The screener has already computed component scores; your job is to verify the thesis with qualitative judgment and recent news.
+
+TICKER: ${ticker}
+COMPANY: ${fundamentals.name || 'Unknown'}
+SECTOR: ${fundamentals.sector || 'Unknown'}
+PRICE: $${price.price.toFixed(2)}  |  Market Cap: $${formatMarketCap(fundamentals.marketCap)}
+P/E: ${fundamentals.peRatio ?? 'n/a'}  |  P/B: ${fundamentals.pbRatio ?? 'n/a'}  |  Rev growth: ${fundamentals.revenueGrowth != null ? (fundamentals.revenueGrowth * 100).toFixed(1) + '%' : 'n/a'}
+Op margin: ${fundamentals.operatingMargin != null ? (fundamentals.operatingMargin * 100).toFixed(1) + '%' : 'n/a'}  |  Debt/Equity: ${fundamentals.debtEquity ?? 'n/a'}
+Analyst: ${analystLine}  |  Upside to target: ${upsidePct}
+Earnings: ${earningsLine}
+Insiders: ${insiderLine}
+Recent news:
+${headlines}
+
+COMPONENT SCORES (pre-computed, 0-100):
+  Value: ${scores.value}  |  Catalyst: ${scores.catalyst}  |  Upside: ${scores.upside}  |  Risk: ${scores.risk}
+  Composite: ${scores.composite}
+
+Your job:
+1. THESIS — one paragraph: what's the setup? Why is this mispriced AND about to move?
+2. VALUE CASE — what makes this cheap relative to fair value? Cite specific numbers.
+3. CATALYSTS — list concrete near-term events (earnings, product, legal, macro). Each with an expected date if known.
+4. KEY RISKS — what invalidates the thesis?
+5. EXPECTED RETURN — realistic 30-day move (%). Be honest, not promotional.
+6. CONVICTION — 0-10 scale, factoring both setup quality AND how much the news actually supports the scores.
+7. RECOMMENDATION — BUY if thesis is strong and catalyst is imminent; WATCH if interesting but timing unclear; AVOID if the scores are misleading or news reveals a problem.
+
+Respond ONLY in this exact JSON format:
+
+{
+  "thesis": "one paragraph, 2-4 sentences, with at least one real number",
+  "value_case": "1-2 sentences citing specific valuation metrics vs peers or history",
+  "catalysts": [
+    { "description": "concrete event", "date": "YYYY-MM-DD or null" }
+  ],
+  "key_risks": ["risk 1", "risk 2"],
+  "expected_return_30d": 0.0,
+  "conviction_score": 0,
+  "recommendation": "BUY" | "WATCH" | "AVOID"
+}
+
+Do not hallucinate. If news contradicts the scores, lower conviction and explain in thesis.`;
+}
+
+function parseUnifiedResponse(
+  response: string,
+  scores: ComponentScores
+): UnifiedClassification {
+  // Default recommendation based on composite if parsing fails
+  const fallbackRec: UnifiedClassification['recommendation'] =
+    scores.composite >= 55 && scores.risk <= 45 ? 'BUY'
+    : scores.composite < 35 || scores.risk > 60 ? 'AVOID'
+    : 'WATCH';
+
+  try {
+    let jsonStr = response.trim();
+    const m = response.match(/\{[\s\S]*\}/);
+    if (m) jsonStr = m[0];
+    const p = JSON.parse(jsonStr);
+
+    const rec = ['BUY', 'WATCH', 'AVOID'].includes(p.recommendation)
+      ? (p.recommendation as UnifiedClassification['recommendation'])
+      : fallbackRec;
+
+    return {
+      thesis: typeof p.thesis === 'string' ? p.thesis : 'Analysis unavailable',
+      valueCase: typeof p.value_case === 'string' ? p.value_case : '',
+      catalysts: Array.isArray(p.catalysts)
+        ? p.catalysts
+            .filter((c: unknown) => c && typeof c === 'object')
+            .map((c: { description?: unknown; date?: unknown }) => ({
+              description: typeof c.description === 'string' ? c.description : '',
+              date: typeof c.date === 'string' ? c.date : null,
+            }))
+            .filter((c: { description: string }) => c.description.length > 0)
+        : [],
+      keyRisks: Array.isArray(p.key_risks)
+        ? p.key_risks.filter((r: unknown): r is string => typeof r === 'string')
+        : [],
+      expectedReturn30d: typeof p.expected_return_30d === 'number'
+        ? Math.max(-50, Math.min(100, p.expected_return_30d))
+        : 0,
+      convictionScore: typeof p.conviction_score === 'number'
+        ? Math.max(0, Math.min(10, Math.round(p.conviction_score)))
+        : 5,
+      recommendation: rec,
+    };
+  } catch (error) {
+    console.error('Failed to parse unified Perplexity response:', error);
+    return {
+      thesis: 'Analysis parsing failed',
+      valueCase: '',
+      catalysts: [],
+      keyRisks: [],
+      expectedReturn30d: 0,
+      convictionScore: 3,
+      recommendation: fallbackRec,
+    };
+  }
+}
+
 export default {
   generateAnalysis,
+  generateUnifiedAnalysis,
 };

@@ -34,13 +34,12 @@ const goodYahoo: YahooQuoteSummary = {
   trailingPE: 15, forwardPE: 13, priceToBook: 2.5, priceToSales: 2.5,
   high52w: 70, low52w: 35,
 };
-// ClassifierEnrichment does not yet have insiderActivity (added in task C2) — cast as any
-const goodEnrich = {
+const goodEnrich: ClassifierEnrichment = {
   analystRatings: { summary: 'Strong Buy: 4, Buy: 3, Hold: 1', meanTarget: 60, highTarget: 70, lowTarget: 50 },
   earnings: { nextDate: '2026-04-15', daysToEarnings: 7, epsEstimate: 1.2, earningsBeatRate: 75 },
   newsHeadlines: ['h1', 'h2', 'h3'],
-  insiderActivity: null,
-} as any as ClassifierEnrichment;
+  insiderActivity: { largeBuy90d: true, anyBuy90d: true, netSelling: false },
+};
 const goodSentiment: MergedSentiment = {
   ticker: 'TEST', totalMentions: 50, avgSentiment: 60, maxMomentum: 1.5,
   sourceCount: 3, sources: {},
@@ -49,7 +48,7 @@ const goodSentiment: MergedSentiment = {
 const goodInput = {
   sentiment: goodSentiment, price: goodPrice, fundamentals: goodFund,
   yahoo: goodYahoo, enrichment: goodEnrich, technicals: null,
-  finvizHits: 2, insiderLargeBuy90d: true, insiderAnyBuy90d: true, insiderNetSelling: false,
+  finvizHits: 2,
 };
 
 const good = calculateAllUnifiedScores(goodInput);
@@ -64,8 +63,11 @@ const junkInput = {
   price: { ...goodPrice, price: 8, high52w: 8, change30dPercent: -15, relativeVolume: 0.5 },
   fundamentals: { ...goodFund, marketCap: 400_000_000, revenueGrowth: -0.10, grossMargin: 0.10, operatingMargin: -0.05, peRatio: 50, pbRatio: 10, debtEquity: 3.0 },
   yahoo: { ...goodYahoo, targetMeanPrice: 7, numberOfAnalystOpinions: 2 },
-  enrichment: { ...goodEnrich, earnings: { nextDate: null, daysToEarnings: null, epsEstimate: null, earningsBeatRate: 0 } },
-  insiderLargeBuy90d: false, insiderAnyBuy90d: false, insiderNetSelling: true,
+  enrichment: {
+    ...goodEnrich,
+    earnings: { nextDate: null, daysToEarnings: null, epsEstimate: null, earningsBeatRate: 0 },
+    insiderActivity: { largeBuy90d: false, anyBuy90d: false, netSelling: true },
+  },
   finvizHits: 0,
 };
 const junk = calculateAllUnifiedScores(junkInput);
