@@ -355,3 +355,70 @@ export interface DualTierClassificationResult {
     twelveMonth: string;
   };
 }
+
+// ── Unified Screener Types (2026-04-08) ────────────────
+
+export type EntryCategory =
+  | 'earnings_event'
+  | 'insider_signal'
+  | 'value_rerating'
+  | 'attention_momentum';
+
+export interface ComponentScores {
+  value: number;      // 0-100
+  catalyst: number;   // 0-100
+  upside: number;     // 0-100
+  risk: number;       // 0-100 (higher = worse)
+  attention: number;  // 0-100 (tie-breaker only)
+  composite: number;  // ~-15 to 90
+}
+
+export interface TradeabilityResult {
+  tradeable: boolean;
+  failures: string[]; // e.g., ['price_lt_2', 'no_analyst_coverage']
+}
+
+export interface YahooQuoteSummary {
+  ticker: string;
+  targetMeanPrice: number | null;
+  targetHighPrice: number | null;
+  targetLowPrice: number | null;
+  numberOfAnalystOpinions: number;
+  recommendationMean: number | null; // 1=Strong Buy, 5=Strong Sell
+  trailingPE: number | null;
+  forwardPE: number | null;
+  priceToBook: number | null;
+  priceToSales: number | null;
+  high52w: number | null;
+  low52w: number | null;
+}
+
+export interface UnifiedClassification {
+  thesis: string;
+  valueCase: string;
+  catalysts: Array<{ description: string; date: string | null }>;
+  keyRisks: string[];
+  expectedReturn30d: number;
+  convictionScore: number; // 0-10
+  recommendation: 'BUY' | 'WATCH' | 'AVOID';
+}
+
+export interface EntryAttribution {
+  valueScore: number;
+  catalystScore: number;
+  upsideScore: number;
+  riskScore: number;
+  composite: number;
+  category: EntryCategory;
+  catalystType: string;
+  catalystDate: string | null; // YYYY-MM-DD
+}
+
+export interface ExitAttribution {
+  valueScore: number;
+  catalystScore: number;
+  upsideScore: number;
+  riskScore: number;
+  composite: number;
+  reason: 'stop_loss' | 'catalyst_fade' | 'max_hold' | 'reclass_avoid' | 'scan_miss' | 'manual';
+}
