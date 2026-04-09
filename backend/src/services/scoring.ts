@@ -7,8 +7,12 @@ import type {
   ClassificationResult,
   ClassifierEnrichment,
   Tier,
+  ComponentScores,
+  YahooQuoteSummary,
 } from '../types/index.js';
 import { alertConfig } from '../lib/config.js';
+import type { TechnicalIndicators } from './technicals.js';
+import { getSectorMedianPE as _getSectorMedianPE, getSectorMedianPB } from './sectorMedians.js';
 
 /**
  * Calculate attention score (0-100) based on sentiment data from aggregators
@@ -110,7 +114,7 @@ const SECTOR_PE_MEDIANS: Record<string, number> = {
 };
 const DEFAULT_PE_MEDIAN = 20;
 
-function getSectorMedianPE(sector: string): number {
+function getSectorMedianPELegacy(sector: string): number {
   if (SECTOR_PE_MEDIANS[sector]) return SECTOR_PE_MEDIANS[sector];
   const key = Object.keys(SECTOR_PE_MEDIANS).find(k =>
     sector.toLowerCase().includes(k.toLowerCase()) || k.toLowerCase().includes(sector.toLowerCase())
@@ -138,7 +142,7 @@ function computeQualityFundamentals(
 
   // 2. Forward P/E vs sector median (0-30 points)
   if (fundamentals.peRatio !== null && fundamentals.peRatio > 0) {
-    const sectorMedian = getSectorMedianPE(fundamentals.sector || '');
+    const sectorMedian = getSectorMedianPELegacy(fundamentals.sector || '');
     const ratio = fundamentals.peRatio / sectorMedian;
     if (ratio <= 0.7) {
       score += 30;
@@ -420,3 +424,288 @@ export default {
   calculateAllScores,
   classifyTicker,
 };
+
+// ── Unified Screener Scoring (2026-04-08) ──────────────
+
+interface UnifiedScoringInputs {
+  sentiment: MergedSentiment;
+  price: PriceData;
+  fundamentals: FundamentalData;
+  yahoo: YahooQuoteSummary | null;
+  enrichment: ClassifierEnrichment | undefined;
+  technicals: TechnicalIndicators | null;
+  finvizHits: number;  // number of distinct Finviz sub-screens this ticker appeared in
+  insiderLargeBuy90d: boolean;
+  insiderAnyBuy90d: boolean;
+  insiderNetSelling: boolean;
+}
+
+/**
+ * Value score (0-100). Answer: is this mispriced?
+ */
+export function calculateValueScore(input: UnifiedScoringInputs): number {
+  const { price, fundamentals, yahoo } = input;
+  let score = 0;
+
+  // Analyst target upside (0-25)
+  if (yahoo?.targetMeanPrice && price.price > 0) {
+    const upsidePct = ((yahoo.targetMeanPrice - price.price) / price.price) * 100;
+    if (upsidePct >= 50) score += 25;
+    else if (upsidePct >= 30) score += 18;
+    else if (upsidePct >= 15) score += 12;
+    else if (upsidePct >= 5) score += 6;
+  }
+
+  // Forward revenue growth (0-15)
+  const revGrowth = fundamentals.revenueGrowth;
+  if (typeof revGrowth === 'number') {
+    if (revGrowth >= 0.20) score += 15;
+    else if (revGrowth >= 0.10) score += 10;
+    else if (revGrowth >= 0.05) score += 6;
+    else if (revGrowth >= 0) score += 2;
+  }
+
+  // Gross margin level (0-10)
+  const gm = fundamentals.grossMargin;
+  if (typeof gm === 'number') {
+    if (gm >= 0.50) score += 10;
+    else if (gm >= 0.35) score += 7;
+    else if (gm >= 0.20) score += 4;
+  }
+
+  // Operating margin (0-10)
+  const om = fundamentals.operatingMargin;
+  if (typeof om === 'number') {
+    if (om >= 0.20) score += 10;
+    else if (om >= 0.10) score += 6;
+    else if (om >= 0.05) score += 3;
+  }
+
+  // P/E vs sector median (0-20)
+  const pe = fundamentals.peRatio;
+  if (typeof pe === 'number' && pe > 0) {
+    const sectorPE = _getSectorMedianPE(fundamentals.sector);
+    const discount = (sectorPE - pe) / sectorPE;
+    if (discount >= 0.3) score += 20;
+    else if (discount >= 0.15) score += 12;
+    else if (discount >= 0) score += 6;
+  }
+
+  // P/B vs sector median (0-10)
+  const pb = fundamentals.pbRatio;
+  if (typeof pb === 'number' && pb > 0) {
+    const sectorPB = getSectorMedianPB(fundamentals.sector);
+    const discount = (sectorPB - pb) / sectorPB;
+    if (discount >= 0.3) score += 10;
+    else if (discount >= 0.15) score += 6;
+    else if (discount >= 0) score += 3;
+  }
+
+  // Distance from 52w high (0-10)
+  if (price.high52w > 0 && price.price > 0) {
+    const distancePct = ((price.high52w - price.price) / price.high52w) * 100;
+    if (distancePct >= 50) score += 10;
+    else if (distancePct >= 30) score += 7;
+    else if (distancePct >= 15) score += 4;
+  }
+
+  return Math.min(100, Math.round(score));
+}
+
+/**
+ * Catalyst score (0-100). Answer: is something about to happen?
+ */
+export function calculateCatalystScoreV2(input: UnifiedScoringInputs): number {
+  const { enrichment, insiderLargeBuy90d, insiderAnyBuy90d, insiderNetSelling } = input;
+  let score = 0;
+
+  // Days to next earnings (0-30)
+  const dte = enrichment?.earnings?.daysToEarnings;
+  if (typeof dte === 'number' && dte >= 0) {
+    if (dte <= 5) score += 30;
+    else if (dte <= 10) score += 25;
+    else if (dte <= 20) score += 15;
+    else if (dte <= 35) score += 8;
+  }
+
+  // Beat rate (0-20)
+  const beatRate = enrichment?.earnings?.earningsBeatRate;
+  if (typeof beatRate === 'number') {
+    if (beatRate >= 100) score += 20;
+    else if (beatRate >= 75) score += 15;
+    else if (beatRate >= 50) score += 10;
+  }
+
+  // Analyst recommendation (0-20)
+  const summary = enrichment?.analystRatings?.summary ?? '';
+  const strongBuyMatch = /Strong Buy:\s*(\d+)/i.exec(summary);
+  const buyMatch = /(?<!Strong )Buy:\s*(\d+)/i.exec(summary);
+  const strongBuyCount = strongBuyMatch ? parseInt(strongBuyMatch[1]) : 0;
+  const buyCount = buyMatch ? parseInt(buyMatch[1]) : 0;
+  const positiveCount = strongBuyCount + buyCount;
+  if (strongBuyCount >= 3) score += 20;
+  else if (strongBuyCount >= 1 || positiveCount >= 4) score += 15;
+  else if (positiveCount >= 2) score += 8;
+
+  // Insider buying (0-20)
+  if (insiderLargeBuy90d) score += 20;
+  else if (insiderAnyBuy90d) score += 10;
+  else if (insiderNetSelling) score -= 5;
+
+  // News recency (0-10)
+  const headlines = enrichment?.newsHeadlines ?? [];
+  if (headlines.length >= 3) score += 10;
+  else if (headlines.length >= 1) score += 5;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+/**
+ * Upside/technical score (0-100). Tailwinds?
+ * Note: technicalSignal uses 'bullish'/'bearish'/'neutral' — mapped accordingly.
+ */
+export function calculateUpsideScore(input: UnifiedScoringInputs): number {
+  const { price, technicals, finvizHits } = input;
+  let score = 0;
+
+  // Relative volume (0-25)
+  const rv = price.relativeVolume ?? 1;
+  if (rv >= 3) score += 25;
+  else if (rv >= 2) score += 18;
+  else if (rv >= 1.5) score += 10;
+  else if (rv >= 1) score += 5;
+
+  // 30d price momentum (0-25)
+  const mom30 = price.change30dPercent ?? 0;
+  if (mom30 >= 20) score += 25;
+  else if (mom30 >= 10) score += 18;
+  else if (mom30 >= 0) score += 10;
+  else if (mom30 >= -10) score += 5;
+
+  // RSI in healthy zone (0-15): 35-65 is sweet spot
+  const rsi = technicals?.rsi14;
+  if (typeof rsi === 'number') {
+    if (rsi >= 40 && rsi <= 60) score += 15;
+    else if (rsi >= 35 && rsi <= 65) score += 10;
+    else if (rsi >= 30 && rsi <= 70) score += 5;
+  }
+
+  // Technical signal bullish (0-20)
+  // technicalSignal is 'bullish' | 'bearish' | 'neutral' in TechnicalIndicators
+  const sig = technicals?.technicalSignal;
+  if (sig === 'bullish') score += 20;
+  else if (sig === 'neutral') score += 8;
+
+  // Multi-screen hits (0-15)
+  if (finvizHits >= 3) score += 15;
+  else if (finvizHits === 2) score += 10;
+  else if (finvizHits === 1) score += 4;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+/**
+ * Risk score (0-100, HIGHER = WORSE).
+ * Items that are also hard gates (micro-cap, no analyst, sub-$2) are NOT
+ * scored here — they block entry in tradeability.ts before this runs.
+ */
+export function calculateRiskScoreV2(input: UnifiedScoringInputs): number {
+  const { fundamentals, yahoo } = input;
+  let score = 15; // base
+
+  // Debt/equity high
+  const de = fundamentals.debtEquity;
+  if (typeof de === 'number') {
+    if (de > 2.0) score += 25;
+    else if (de > 1.0) score += 12;
+  }
+
+  // Negative or zero revenue growth
+  const rg = fundamentals.revenueGrowth;
+  if (typeof rg === 'number') {
+    if (rg < -0.10) score += 20;
+    else if (rg <= 0) score += 10;
+  }
+
+  // Small cap ($300M-$2B) → moderate penalty
+  const mc = fundamentals.marketCap;
+  if (typeof mc === 'number' && mc < 2_000_000_000 && mc >= 300_000_000) {
+    score += 15;
+  }
+
+  // Negative operating margin
+  const om = fundamentals.operatingMargin;
+  if (typeof om === 'number' && om < 0) {
+    score += 15;
+  }
+
+  // Mild analyst coverage (passed gate but thin)
+  const analysts = yahoo?.numberOfAnalystOpinions ?? 0;
+  if (analysts < 5) score += 10;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+/**
+ * Attention score (tie-breaker only, NOT part of composite)
+ */
+export function calculateAttentionScoreV2(sentiment: MergedSentiment): number {
+  const src = sentiment.sources;
+  const apeRank = src['apewisdom-penny']?.rank
+    ?? src['apewisdom-all']?.rank
+    ?? src['apewisdom-wsb']?.rank
+    ?? 999;
+  const stMentions = src.stocktwits?.mentions ?? 0;
+  const finvizHits = [src.finviz].filter(Boolean).length;
+
+  let score = 0;
+  if (apeRank <= 10) score += 40;
+  else if (apeRank <= 50) score += 25;
+  else if (apeRank <= 100) score += 10;
+  if (stMentions > 1000) score += 20;
+  else if (stMentions > 100) score += 10;
+  score += finvizHits * 10;
+  return Math.min(100, score);
+}
+
+/**
+ * Composite score with weights from spec:
+ * composite = 0.30*value + 0.35*catalyst + 0.25*upside - 0.15*risk
+ * Attention is NOT included.
+ */
+export function calculateCompositeScore(
+  value: number,
+  catalyst: number,
+  upside: number,
+  risk: number
+): number {
+  const composite = 0.30 * value + 0.35 * catalyst + 0.25 * upside - 0.15 * risk;
+  return Math.round(composite);
+}
+
+/**
+ * Build the full ComponentScores object from unified inputs.
+ */
+export function calculateAllUnifiedScores(input: UnifiedScoringInputs): ComponentScores {
+  const value = calculateValueScore(input);
+  const catalyst = calculateCatalystScoreV2(input);
+  const upside = calculateUpsideScore(input);
+  const risk = calculateRiskScoreV2(input);
+  const attention = calculateAttentionScoreV2(input.sentiment);
+  const composite = calculateCompositeScore(value, catalyst, upside, risk);
+  return { value, catalyst, upside, risk, attention, composite };
+}
+
+/**
+ * Classification based on composite + risk + tradeability.
+ */
+export function classifyUnified(
+  scores: ComponentScores,
+  tradeable: boolean
+): 'BUY' | 'WATCH' | 'AVOID' {
+  if (scores.composite < 50 || scores.risk > 60) return 'AVOID';
+  if (scores.composite >= 65 && scores.risk <= 45 && tradeable) return 'BUY';
+  return 'WATCH';
+}
+
+export type { UnifiedScoringInputs };
