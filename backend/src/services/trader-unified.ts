@@ -66,7 +66,7 @@ const STOP_LOSS_PCT = 12; // position down >= 12% from entry triggers stop
 const CATALYST_FADE_DAYS = 2; // days past catalyst date before fade trigger
 
 // Entry gates
-const MIN_COMPOSITE = 55;
+const MIN_COMPOSITE = 45;
 const MAX_RISK = 45;
 const MIN_CONVICTION = 6;
 

@@ -705,7 +705,7 @@ export function classifyUnified(
   tradeable: boolean
 ): 'BUY' | 'WATCH' | 'AVOID' {
   if (scores.composite < 35 || scores.risk > 60) return 'AVOID';
-  if (scores.composite >= 55 && scores.risk <= 45 && tradeable) return 'BUY';
+  if (scores.composite >= 45 && scores.risk <= 45 && tradeable) return 'BUY';
   return 'WATCH';
 }
 

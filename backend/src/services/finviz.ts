@@ -12,7 +12,8 @@
 
 type FinvizSource =
   | 'value_setup' | 'analyst_upgrade' | 'earnings_catalyst'
-  | 'insider_buying' | 'unusual_volume' | 'oversold_bounce';
+  | 'insider_buying' | 'unusual_volume' | 'oversold_bounce'
+  | 'smallcap_value' | 'midcap_catalyst';
 
 interface FinvizTicker {
   ticker: string;
@@ -58,23 +59,40 @@ async function fetchFinvizScreen(url: string, source: FinvizSource): Promise<Fin
 }
 
 const QUERIES: Record<FinvizSource, string> = {
-  value_setup:       'https://finviz.com/screener.ashx?v=111&f=fa_pe_u15,fa_pb_u3,sh_avgvol_o500&ft=4&o=-marketcap',
-  analyst_upgrade:   'https://finviz.com/screener.ashx?v=111&f=an_recom_buybetter,sh_avgvol_o500&ft=4&o=-marketcap',
-  earnings_catalyst: 'https://finviz.com/screener.ashx?v=111&f=earningsdate_nextdays5,sh_avgvol_o500&ft=4&o=-marketcap',
-  insider_buying:    'https://finviz.com/screener.ashx?v=111&f=ins_ownership_pos,sh_insidertrans_veryposlarge&ft=4&o=-marketcap',
-  unusual_volume:    'https://finviz.com/screener.ashx?v=111&f=sh_relvol_o2,sh_avgvol_o500&ft=4&o=-relativevolume',
-  oversold_bounce:   'https://finviz.com/screener.ashx?v=111&f=fa_curratio_o1,sh_avgvol_o500,ta_rsi_os30&ft=4&o=-marketcap',
+  // Sort by cheapest P/E (not market cap) so undervalued small/mid caps surface
+  value_setup:       'https://finviz.com/screener.ashx?v=111&f=fa_pe_u15,fa_pb_u3,sh_avgvol_o200&ft=4&o=pe',
+  // Sort by strongest recommendation (1=strong buy first)
+  analyst_upgrade:   'https://finviz.com/screener.ashx?v=111&f=an_recom_buybetter,sh_avgvol_o200&ft=4&o=recommendationmean',
+  // Earnings catalyst — sort by soonest earnings date
+  earnings_catalyst: 'https://finviz.com/screener.ashx?v=111&f=earningsdate_nextdays5,sh_avgvol_o200&ft=4&o=earningsdate',
+  // Insider buying — sort by insider transaction value (most positive first)
+  insider_buying:    'https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o200,sh_insidertrans_veryposlarge&ft=4&o=-insidertransactions',
+  // Unusual volume — sort by relative volume (highest first), already correct
+  unusual_volume:    'https://finviz.com/screener.ashx?v=111&f=sh_relvol_o2,sh_avgvol_o200&ft=4&o=-relativevolume',
+  // Oversold — sort by lowest RSI first (most oversold)
+  oversold_bounce:   'https://finviz.com/screener.ashx?v=111&f=fa_curratio_o1,sh_avgvol_o200,ta_rsi_os30&ft=4&o=rsi',
+  // Small-cap value: $300M-$2B market cap, P/E under 20, volume > 200K
+  smallcap_value:    'https://finviz.com/screener.ashx?v=111&f=cap_smallover,fa_pe_u20,sh_avgvol_o200,sh_price_o2&ft=4&o=pe',
+  // Mid-cap catalyst: $2B-$10B, earnings within 2 weeks, analyst buy+
+  midcap_catalyst:   'https://finviz.com/screener.ashx?v=111&f=cap_midover,cap_midunder,an_recom_buybetter,sh_avgvol_o200&ft=4&o=recommendationmean',
 };
 
 /**
- * Fetch all 6 Finviz screens in parallel.
+ * Fetch all 8 Finviz screens in two batches to avoid rate limiting.
  * Returns flat list — same ticker may appear from multiple sources.
  */
 export async function fetchAllFinvizSignals(): Promise<FinvizTicker[]> {
   const entries = Object.entries(QUERIES) as Array<[FinvizSource, string]>;
-  const results = await Promise.all(entries.map(([source, url]) => fetchFinvizScreen(url, source)));
+  const batch1 = entries.slice(0, 4);
+  const batch2 = entries.slice(4);
+
+  const results1 = await Promise.all(batch1.map(([source, url]) => fetchFinvizScreen(url, source)));
+  // Small delay between batches to avoid 429s
+  await new Promise(r => setTimeout(r, 2000));
+  const results2 = await Promise.all(batch2.map(([source, url]) => fetchFinvizScreen(url, source)));
+
   const flat: FinvizTicker[] = [];
-  for (const list of results) flat.push(...list);
+  for (const list of [...results1, ...results2]) flat.push(...list);
   return flat;
 }
 
