@@ -207,11 +207,17 @@ function selectTopCandidates(
         break;
       }
     }
+    // Penny stock bonus: stocks flagged from apewisdom-penny or finviz
+    // screens get priority since they're the core of our trading universe.
+    // Multi-source penny stocks (both apewisdom-penny AND finviz) get extra.
+    const isPenny = !!(sentiment.sources['apewisdom-penny'] || sentiment.sources.finviz);
+    const pennyBonus = isPenny ? 20 : 0;
+    const multiPennyBonus = (sentiment.sources['apewisdom-penny'] && sentiment.sources.finviz) ? 10 : 0;
     scored.push({
       ticker,
       sentiment,
       finvizSources: fvSources,
-      score: mentionsScore + finvizScore + catalystBonus,
+      score: mentionsScore + finvizScore + catalystBonus + pennyBonus + multiPennyBonus,
     });
   }
 

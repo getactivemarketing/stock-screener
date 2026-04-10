@@ -52,6 +52,7 @@ function nodeGet(
         hostname: u.hostname,
         path: u.pathname + u.search,
         method: 'GET',
+        maxHeaderSize: 65536,
         headers: {
           'User-Agent': UA,
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',

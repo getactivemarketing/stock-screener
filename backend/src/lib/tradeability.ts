@@ -46,10 +46,12 @@ export function evaluateTradeability(inputs: TradeabilityInputs): TradeabilityRe
     failures.push('dollar_volume_lt_5m');
   }
 
-  // Gate 4: analyst coverage ≥ 2
-  const analystCount = yahoo?.numberOfAnalystOpinions ?? 0;
-  if (analystCount < MIN_ANALYST_COUNT) {
-    failures.push('no_analyst_coverage');
+  // Gate 4: analyst coverage ≥ 2 (skip if Yahoo data unavailable)
+  if (yahoo !== null) {
+    const analystCount = yahoo.numberOfAnalystOpinions ?? 0;
+    if (analystCount < MIN_ANALYST_COUNT) {
+      failures.push('no_analyst_coverage');
+    }
   }
 
   // Gate 5: US-listed exchange.
