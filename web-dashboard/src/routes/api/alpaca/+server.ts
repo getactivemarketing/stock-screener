@@ -137,6 +137,14 @@ export const GET: RequestHandler = async ({ url }) => {
 
       const raw = await response.json();
       // Alpaca returns parallel arrays; flatten into per-day objects and filter out zero-equity placeholders.
+      // Timestamps are end-of-day UTC (Alpaca uses 00:00:00 UTC which is 8pm ET the previous day).
+      // We need to render each row against its US/Eastern trading date, not UTC.
+      const etDateFormatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
       const days: Array<{ date: string; equity: number; profitLoss: number; profitLossPct: number }> = [];
       const ts: number[] = raw.timestamp || [];
       const eq: number[] = raw.equity || [];
@@ -145,8 +153,9 @@ export const GET: RequestHandler = async ({ url }) => {
       for (let i = 0; i < ts.length; i++) {
         if (!eq[i]) continue;
         const d = new Date(ts[i] * 1000);
+        // en-CA format: YYYY-MM-DD
         days.push({
-          date: d.toISOString().slice(0, 10),
+          date: etDateFormatter.format(d),
           equity: eq[i],
           profitLoss: pl[i] ?? 0,
           profitLossPct: (plPct[i] ?? 0) * 100,
