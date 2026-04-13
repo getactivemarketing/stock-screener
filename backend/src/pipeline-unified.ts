@@ -55,6 +55,36 @@ const RUN_ID = uuidv4();
 const START_TIME = Date.now();
 const MAX_CANDIDATES = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 30;
 
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/** Fisher-Yates shuffle — mutates and returns the array. */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/** Process items in parallel batches, collecting results in order. */
+async function processBatched<T, R>(
+  items: T[],
+  batchSize: number,
+  fn: (item: T) => Promise<R>,
+  interBatchDelayMs: number = 200,
+): Promise<PromiseSettledResult<R>[]> {
+  const allResults: PromiseSettledResult<R>[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const results = await Promise.allSettled(batch.map(fn));
+    allResults.push(...results);
+    if (i + batchSize < items.length) {
+      await sleep(interBatchDelayMs);
+    }
+  }
+  return allResults;
+}
+
 // ── E1: Category classification helper ───────────────────────────────────
 
 function classifyEntryCategory(
@@ -237,16 +267,26 @@ interface EnrichedTicker {
 }
 
 async function enrichWithMarketData(candidates: Candidate[]): Promise<EnrichedTicker[]> {
+  const BATCH_SIZE = 5;
   const results: EnrichedTicker[] = [];
-  let processed = 0;
 
-  for (const cand of candidates) {
-    try {
+  const settled = await processBatched(
+    candidates,
+    BATCH_SIZE,
+    async (cand) => {
       const [price, fundamentals, yahoo] = await Promise.all([
         finnhub.fetchPriceData(cand.ticker),
         finnhub.fetchFundamentalData(cand.ticker),
         fetchQuoteSummary(cand.ticker),
       ]);
+      return { cand, price, fundamentals, yahoo };
+    },
+    200,
+  );
+
+  for (const result of settled) {
+    if (result.status === 'fulfilled') {
+      const { cand, price, fundamentals, yahoo } = result.value;
       if (price && fundamentals) {
         results.push({
           ticker: cand.ticker,
@@ -259,16 +299,12 @@ async function enrichWithMarketData(candidates: Candidate[]): Promise<EnrichedTi
       } else {
         console.log(`  Dropped ${cand.ticker}: missing price/fundamentals`);
       }
-    } catch (err) {
-      console.warn(`  Failed to enrich ${cand.ticker}:`, (err as Error).message);
+    } else {
+      console.warn(`  Failed to enrich ticker:`, result.reason?.message ?? result.reason);
     }
-    processed++;
-    if (processed % 10 === 0) {
-      console.log(`  Progress: ${processed}/${candidates.length}`);
-    }
-    await sleep(150);
   }
 
+  console.log(`  Progress: ${results.length}/${candidates.length} enriched`);
   return results;
 }
 
@@ -297,42 +333,60 @@ async function runUnifiedPipeline(): Promise<void> {
     const merged = mergeSentimentByTicker(sentiment);
     console.log(`  ${Object.keys(merged).length} unique tickers`);
 
-    // 4. Select candidates
+    // 4. Select candidates (then shuffle to avoid alphabetical bias)
     console.log('\n[3/9] Selecting top candidates...');
-    const candidates = selectTopCandidates(merged, finvizSourcesByTicker, MAX_CANDIDATES);
-    console.log(`  Selected ${candidates.length} candidates`);
+    const candidates = shuffle(selectTopCandidates(merged, finvizSourcesByTicker, MAX_CANDIDATES));
+    console.log(`  Selected ${candidates.length} candidates (shuffled)`);
 
     // 5. Market data enrichment
     console.log('\n[4/9] Enriching with Finnhub + Yahoo...');
     const enriched = await enrichWithMarketData(candidates);
     console.log(`  ${enriched.length} enriched tickers`);
 
-    // 6. Classifier enrichment
+    // 6. Classifier enrichment (batched, 5 at a time)
     console.log('\n[5/9] Fetching classifier enrichment...');
     const enrichmentMap = new Map<string, ClassifierEnrichment | undefined>();
-    for (const t of enriched) {
-      try {
+    const enrichSettled = await processBatched(
+      enriched,
+      5,
+      async (t) => {
         const e = await enrichForClassifier(t.ticker, []);
-        enrichmentMap.set(t.ticker, e);
-      } catch (err) {
-        console.warn(`  Enrichment failed for ${t.ticker}:`, (err as Error).message);
-        enrichmentMap.set(t.ticker, undefined);
+        return { ticker: t.ticker, enrichment: e };
+      },
+      200,
+    );
+    for (let i = 0; i < enrichSettled.length; i++) {
+      const r = enrichSettled[i];
+      const ticker = enriched[i].ticker;
+      if (r.status === 'fulfilled') {
+        enrichmentMap.set(ticker, r.value.enrichment);
+      } else {
+        console.warn(`  Enrichment failed for ${ticker}:`, r.reason?.message ?? r.reason);
+        enrichmentMap.set(ticker, undefined);
       }
-      await sleep(1000);
     }
 
-    // 7. Technicals
+    // 7. Technicals (batched, 5 at a time)
     console.log('\n[6/9] Calculating technicals...');
     const technicalsMap = new Map<string, TechnicalIndicators | null>();
-    for (const t of enriched) {
-      try {
+    const techSettled = await processBatched(
+      enriched,
+      5,
+      async (t) => {
         const ind = await technicals.calculateTechnicalIndicators(t.ticker);
-        technicalsMap.set(t.ticker, ind);
-      } catch (err) {
-        console.warn(`  Technicals failed for ${t.ticker}:`, (err as Error).message);
-        technicalsMap.set(t.ticker, null);
+        return { ticker: t.ticker, indicators: ind };
+      },
+      200,
+    );
+    for (let i = 0; i < techSettled.length; i++) {
+      const r = techSettled[i];
+      const ticker = enriched[i].ticker;
+      if (r.status === 'fulfilled') {
+        technicalsMap.set(ticker, r.value.indicators);
+      } else {
+        console.warn(`  Technicals failed for ${ticker}:`, r.reason?.message ?? r.reason);
+        technicalsMap.set(ticker, null);
       }
-      await sleep(500);
     }
 
     // 8. Tradeability + 9. scoring + 10. LLM + 11. categorize
@@ -348,88 +402,85 @@ async function runUnifiedPipeline(): Promise<void> {
       catalystDate: string | null;
       recommendation: 'BUY' | 'WATCH' | 'AVOID';
     }
-    const finalRows: FinalRow[] = [];
+
+    // Phase A: synchronous scoring & gating (fast, no API calls)
+    interface ScoredTicker {
+      t: EnrichedTicker;
+      enrichment: ClassifierEnrichment | undefined;
+      tech: TechnicalIndicators | null;
+      tradeability: TradeabilityResult;
+      scores: ComponentScores;
+      needsLLM: boolean;
+    }
+    const scoredTickers: ScoredTicker[] = [];
+    const SKIP_CLASSIFICATION: UnifiedClassification = {
+      thesis: '', valueCase: '', catalysts: [], keyRisks: [],
+      expectedReturn30d: 0, convictionScore: 0, recommendation: 'AVOID',
+    };
 
     for (const t of enriched) {
       const enrichment = enrichmentMap.get(t.ticker);
       const tech = technicalsMap.get(t.ticker) ?? null;
-
       const tradeability = evaluateTradeability({
-        price: t.price,
-        fundamentals: t.fundamentals,
-        yahoo: t.yahoo,
-        enrichment,
+        price: t.price, fundamentals: t.fundamentals, yahoo: t.yahoo, enrichment,
       });
-
       const scores = calculateAllUnifiedScores({
-        sentiment: t.sentiment,
-        price: t.price,
-        fundamentals: t.fundamentals,
-        yahoo: t.yahoo,
-        enrichment,
-        technicals: tech,
-        finvizHits: t.finvizSources.size,
+        sentiment: t.sentiment, price: t.price, fundamentals: t.fundamentals,
+        yahoo: t.yahoo, enrichment, technicals: tech, finvizHits: t.finvizSources.size,
       });
+      scoredTickers.push({
+        t, enrichment, tech, tradeability, scores,
+        needsLLM: tradeability.tradeable && scores.composite >= 35,
+      });
+    }
 
-      let classification: UnifiedClassification;
-      if (!tradeability.tradeable) {
-        classification = {
-          thesis: 'skipped: not tradeable',
-          valueCase: '',
-          catalysts: [],
-          keyRisks: [],
-          expectedReturn30d: 0,
-          convictionScore: 0,
-          recommendation: 'AVOID',
-        };
-      } else if (scores.composite < 35) {
-        classification = {
-          thesis: 'skipped: low composite',
-          valueCase: '',
-          catalysts: [],
-          keyRisks: [],
-          expectedReturn30d: 0,
-          convictionScore: 0,
-          recommendation: 'AVOID',
-        };
+    // Phase B: batch LLM calls for tickers that need classification (3 at a time)
+    const llmTickers = scoredTickers.filter((s) => s.needsLLM);
+    const llmMap = new Map<string, UnifiedClassification>();
+    console.log(`  ${llmTickers.length}/${scoredTickers.length} tickers need LLM classification`);
+
+    const llmSettled = await processBatched(
+      llmTickers,
+      3,
+      async (s) => {
+        const cls = await generateUnifiedAnalysis({
+          ticker: s.t.ticker, price: s.t.price, fundamentals: s.t.fundamentals,
+          yahoo: s.t.yahoo, enrichment: s.enrichment, scores: s.scores,
+        });
+        return { ticker: s.t.ticker, classification: cls };
+      },
+      500,
+    );
+    for (let i = 0; i < llmSettled.length; i++) {
+      const r = llmSettled[i];
+      const ticker = llmTickers[i].t.ticker;
+      if (r.status === 'fulfilled') {
+        llmMap.set(ticker, r.value.classification);
       } else {
-        try {
-          classification = await generateUnifiedAnalysis({
-            ticker: t.ticker,
-            price: t.price,
-            fundamentals: t.fundamentals,
-            yahoo: t.yahoo,
-            enrichment,
-            scores,
-          });
-        } catch (err) {
-          console.warn(`  LLM failed for ${t.ticker}:`, (err as Error).message);
-          classification = {
-            thesis: 'llm_error',
-            valueCase: '',
-            catalysts: [],
-            keyRisks: [],
-            expectedReturn30d: 0,
-            convictionScore: 0,
-            recommendation: 'AVOID',
-          };
-        }
-        await sleep(300);
+        console.warn(`  LLM failed for ${ticker}:`, r.reason?.message ?? r.reason);
+        llmMap.set(ticker, { ...SKIP_CLASSIFICATION, thesis: 'llm_error' });
+      }
+    }
+
+    // Phase C: assemble final rows
+    const finalRows: FinalRow[] = [];
+    for (const s of scoredTickers) {
+      let classification: UnifiedClassification;
+      if (!s.tradeability.tradeable) {
+        classification = { ...SKIP_CLASSIFICATION, thesis: 'skipped: not tradeable' };
+      } else if (s.scores.composite < 35) {
+        classification = { ...SKIP_CLASSIFICATION, thesis: 'skipped: low composite' };
+      } else {
+        classification = llmMap.get(s.t.ticker) ?? { ...SKIP_CLASSIFICATION, thesis: 'llm_error' };
       }
 
-      const { category, catalystDate } = classifyEntryCategory(scores, enrichment, t.finvizSources);
-      const recommendation = classifyUnified(scores, tradeability.tradeable);
+      const { category, catalystDate } = classifyEntryCategory(s.scores, s.enrichment, s.t.finvizSources);
+      const recommendation = classifyUnified(s.scores, s.tradeability.tradeable);
 
       finalRows.push({
-        enriched: t,
-        enrichment,
-        tech,
-        tradeability,
-        scores,
-        classification,
-        category,
-        catalystDate,
-        recommendation,
+        enriched: s.t, enrichment: s.enrichment, tech: s.tech,
+        tradeability: s.tradeability, scores: s.scores,
+        classification, category, catalystDate, recommendation,
       });
     }
 
