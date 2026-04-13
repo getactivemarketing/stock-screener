@@ -43,9 +43,13 @@ function parseFinvizHtml(html: string): string[] {
 
 async function fetchFinvizScreen(url: string, source: FinvizSource): Promise<FinvizTicker[]> {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(url, {
       headers: { 'Accept': 'text/html,application/xhtml+xml', 'User-Agent': UA },
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (!res.ok) {
       console.log(`    [Finviz ${source}] HTTP ${res.status}`);
       return [];

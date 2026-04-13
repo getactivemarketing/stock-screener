@@ -691,10 +691,18 @@ async function saveResults(rows: SaveRow[]): Promise<void> {
   }
 }
 
-// Entry point
-runUnifiedPipeline().catch((err) => {
-  console.error(err);
+// Entry point — with global timeout safety net (15 min)
+const PIPELINE_TIMEOUT_MS = 15 * 60 * 1000;
+const globalTimeout = setTimeout(() => {
+  console.error(`[TIMEOUT] Pipeline exceeded ${PIPELINE_TIMEOUT_MS / 60000} minutes — force exiting`);
   process.exit(1);
-});
+}, PIPELINE_TIMEOUT_MS);
+
+runUnifiedPipeline()
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  })
+  .finally(() => clearTimeout(globalTimeout));
 
 export { runUnifiedPipeline, classifyEntryCategory, selectTopCandidates, mergeSentimentByTicker };
