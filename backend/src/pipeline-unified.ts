@@ -53,7 +53,7 @@ import type {
 
 const RUN_ID = uuidv4();
 const START_TIME = Date.now();
-const MAX_CANDIDATES = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 30;
+const MAX_CANDIDATES = process.env.MAX_TICKERS ? parseInt(process.env.MAX_TICKERS) : 40;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -228,8 +228,8 @@ function selectTopCandidates(
 
   for (const [ticker, sentiment] of Object.entries(merged)) {
     const fvSources = finvizSourcesByTicker.get(ticker) ?? new Set<string>();
-    const mentionsScore = Math.min(20, sentiment.totalMentions / 10);
-    const finvizScore = fvSources.size * 15;
+    const mentionsScore = Math.min(30, sentiment.totalMentions / 10);
+    const finvizScore = Math.min(30, fvSources.size * 15);
     let catalystBonus = 0;
     for (const s of fvSources) {
       if (CATALYST_SOURCES.has(s)) {
