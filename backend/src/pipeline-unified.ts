@@ -237,9 +237,6 @@ function selectTopCandidates(
         break;
       }
     }
-    // Penny stock bonus: stocks flagged from apewisdom-penny or finviz
-    // screens get priority since they're the core of our trading universe.
-    // Multi-source penny stocks (both apewisdom-penny AND finviz) get extra.
     const isPenny = !!(sentiment.sources['apewisdom-penny'] || sentiment.sources.finviz);
     const pennyBonus = isPenny ? 20 : 0;
     const multiPennyBonus = (sentiment.sources['apewisdom-penny'] && sentiment.sources.finviz) ? 10 : 0;
@@ -251,8 +248,46 @@ function selectTopCandidates(
     });
   }
 
+  // Sort once by score for consistent reservation order
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, n);
+
+  // Per-source quotas: reserve slots for each source so Finviz biotechs
+  // don't drown out ApeWisdom trends. Tickers picked once go into `picked`;
+  // any ticker that satisfies its source's quota counts toward that quota
+  // regardless of whether it was picked for a different quota earlier.
+  const picked = new Map<string, Candidate>();
+  const reserve = (candidates: Candidate[], quota: number) => {
+    let taken = 0;
+    for (const c of candidates) {
+      if (taken >= quota) break;
+      if (!picked.has(c.ticker)) {
+        picked.set(c.ticker, c);
+        taken++;
+      }
+    }
+  };
+
+  const hasSource = (c: Candidate, source: keyof MergedSentiment['sources']) => !!c.sentiment.sources[source];
+  const hasFinvizScreen = (c: Candidate, screen: string) => c.finvizSources.has(screen);
+
+  // ApeWisdom-penny: trending penny stocks (core universe)
+  reserve(scored.filter((c) => hasSource(c, 'apewisdom-penny')), 8);
+  // ApeWisdom-all: broader market trending tickers
+  reserve(scored.filter((c) => hasSource(c, 'apewisdom-all')), 4);
+  // Stocktwits: watchlist-driven trending
+  reserve(scored.filter((c) => hasSource(c, 'stocktwits')), 2);
+  // Finviz catalyst screens (3 each)
+  reserve(scored.filter((c) => hasFinvizScreen(c, 'earnings_catalyst')), 3);
+  reserve(scored.filter((c) => hasFinvizScreen(c, 'analyst_upgrade')), 3);
+  reserve(scored.filter((c) => hasFinvizScreen(c, 'insider_buying')), 3);
+
+  // Fill remaining slots by pure score from unpicked tickers
+  for (const c of scored) {
+    if (picked.size >= n) break;
+    if (!picked.has(c.ticker)) picked.set(c.ticker, c);
+  }
+
+  return [...picked.values()].slice(0, n);
 }
 
 // ── Enrichment pass ──────────────────────────────────────────────────────
@@ -336,7 +371,9 @@ async function runUnifiedPipeline(): Promise<void> {
     // 4. Select candidates (then shuffle to avoid alphabetical bias)
     console.log('\n[3/9] Selecting top candidates...');
     const candidates = shuffle(selectTopCandidates(merged, finvizSourcesByTicker, MAX_CANDIDATES));
-    console.log(`  Selected ${candidates.length} candidates (shuffled)`);
+    const letters: Record<string, number> = {};
+    for (const c of candidates) letters[c.ticker[0]] = (letters[c.ticker[0]] || 0) + 1;
+    console.log(`  Selected ${candidates.length} candidates (shuffled). By letter:`, JSON.stringify(letters));
 
     // 5. Market data enrichment
     console.log('\n[4/9] Enriching with Finnhub + Yahoo...');
