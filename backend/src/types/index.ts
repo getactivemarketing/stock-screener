@@ -243,7 +243,19 @@ export interface TradingConfig {
   scanMissMax: number;
   slippagePct: number;
   qualityHoldDaysMax: number;
+  // Speculative tier (migration 011)
+  speculativeEnabled: boolean;
+  speculativePositionPct: number;
+  speculativeMaxPositions: number;
+  speculativePortfolioHeatPct: number;
+  speculativeStopLossPct: number;
+  speculativeMaxHoldDays: number;
+  speculativeMinComposite: number;
 }
+
+// Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is
+// the loosened-gates social-velocity tier for meme/squeeze candidates.
+export type ScanTier = 'core' | 'speculative';
 
 export interface TradeDecision {
   ticker: string;
@@ -259,6 +271,7 @@ export interface TradeDecision {
   targetPrice?: number;
   scanResultId?: string;
   configSnapshot?: TradingConfig;
+  tier?: ScanTier;
 }
 
 export interface AlpacaAccount {

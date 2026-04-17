@@ -54,6 +54,15 @@ export async function loadTradingConfig(): Promise<TradingConfig> {
     scanMissMax: row.scan_miss_max as number,
     slippagePct: row.slippage_pct as number,
     qualityHoldDaysMax: Number(row.quality_hold_days_max) || 15,
+    // Speculative tier (migration 011). Numeric columns come back as strings
+    // from pg unless explicitly cast — coerce via Number() to keep math safe.
+    speculativeEnabled: (row.speculative_enabled as boolean) ?? false,
+    speculativePositionPct: Number(row.speculative_position_pct) || 1.5,
+    speculativeMaxPositions: Number(row.speculative_max_positions) || 5,
+    speculativePortfolioHeatPct: Number(row.speculative_portfolio_heat_pct) || 8.0,
+    speculativeStopLossPct: Number(row.speculative_stop_loss_pct) || 15.0,
+    speculativeMaxHoldDays: Number(row.speculative_max_hold_days) || 5,
+    speculativeMinComposite: Number(row.speculative_min_composite) || 50.0,
   };
 }
 

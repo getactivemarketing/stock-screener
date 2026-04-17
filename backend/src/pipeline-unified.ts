@@ -33,7 +33,7 @@ import { fetchQuoteSummary } from './services/yahoo.js';
 import { calculateAllUnifiedScores, classifyUnified } from './services/scoring.js';
 import { generateUnifiedAnalysis } from './services/classifier.js';
 import technicals, { type TechnicalIndicators } from './services/technicals.js';
-import { evaluateTradeability } from './lib/tradeability.js';
+import { evaluateTradeability, evaluateSpeculativeTradeability } from './lib/tradeability.js';
 import { sleep } from './lib/http.js';
 import * as traderUnified from './services/trader-unified.js';
 import * as alpacaService from './services/alpaca.js';
@@ -47,6 +47,7 @@ import type {
   YahooQuoteSummary,
   ComponentScores,
   EntryCategory,
+  ScanTier,
   UnifiedClassification,
   TradeabilityResult,
 } from './types/index.js';
@@ -438,6 +439,7 @@ async function runUnifiedPipeline(): Promise<void> {
       category: EntryCategory;
       catalystDate: string | null;
       recommendation: 'BUY' | 'WATCH' | 'AVOID';
+      tier: ScanTier;
     }
 
     // Phase A: synchronous scoring & gating (fast, no API calls)
@@ -448,6 +450,7 @@ async function runUnifiedPipeline(): Promise<void> {
       tradeability: TradeabilityResult;
       scores: ComponentScores;
       needsLLM: boolean;
+      tier: ScanTier;
     }
     const scoredTickers: ScoredTicker[] = [];
     const SKIP_CLASSIFICATION: UnifiedClassification = {
@@ -458,16 +461,37 @@ async function runUnifiedPipeline(): Promise<void> {
     for (const t of enriched) {
       const enrichment = enrichmentMap.get(t.ticker);
       const tech = technicalsMap.get(t.ticker) ?? null;
-      const tradeability = evaluateTradeability({
+      const coreTradeability = evaluateTradeability({
         price: t.price, fundamentals: t.fundamentals, yahoo: t.yahoo, enrichment,
       });
       const scores = calculateAllUnifiedScores({
         sentiment: t.sentiment, price: t.price, fundamentals: t.fundamentals,
         yahoo: t.yahoo, enrichment, technicals: tech, finvizHits: t.finvizSources.size,
       });
+
+      // Tier assignment: default core. If core fails, try speculative.
+      let tier: ScanTier = 'core';
+      let tradeability = coreTradeability;
+      if (!coreTradeability.tradeable) {
+        const specTradeability = evaluateSpeculativeTradeability({
+          price: t.price, fundamentals: t.fundamentals, yahoo: t.yahoo,
+          enrichment, sentiment: t.sentiment,
+        });
+        if (specTradeability.tradeable) {
+          tier = 'speculative';
+          tradeability = specTradeability;
+        }
+      }
+
       scoredTickers.push({
-        t, enrichment, tech, tradeability, scores,
-        needsLLM: tradeability.tradeable && scores.composite >= 35,
+        t, enrichment, tech, tradeability, scores, tier,
+        // LLM only for tradeable + composite >= 35. Speculative tier uses
+        // attention×0.7+catalyst×0.3 as its effective composite.
+        needsLLM: tradeability.tradeable && (
+          tier === 'core'
+            ? scores.composite >= 35
+            : (scores.attention * 0.7 + scores.catalyst * 0.3) >= 35
+        ),
       });
     }
 
@@ -502,24 +526,40 @@ async function runUnifiedPipeline(): Promise<void> {
     // Phase C: assemble final rows
     const finalRows: FinalRow[] = [];
     for (const s of scoredTickers) {
+      // For classification gating, speculative tier uses its own composite formula
+      const effectiveComposite = s.tier === 'core'
+        ? s.scores.composite
+        : s.scores.attention * 0.7 + s.scores.catalyst * 0.3;
+
       let classification: UnifiedClassification;
       if (!s.tradeability.tradeable) {
         classification = { ...SKIP_CLASSIFICATION, thesis: 'skipped: not tradeable' };
-      } else if (s.scores.composite < 35) {
+      } else if (effectiveComposite < 35) {
         classification = { ...SKIP_CLASSIFICATION, thesis: 'skipped: low composite' };
       } else {
         classification = llmMap.get(s.t.ticker) ?? { ...SKIP_CLASSIFICATION, thesis: 'llm_error' };
       }
 
       const { category, catalystDate } = classifyEntryCategory(s.scores, s.enrichment, s.t.finvizSources);
-      const recommendation = classifyUnified(s.scores, s.tradeability.tradeable);
+      // For speculative tier, BUY/WATCH/AVOID decision uses the speculative
+      // composite formula; trader applies its own tier-aware thresholds.
+      const recommendation = s.tier === 'core'
+        ? classifyUnified(s.scores, s.tradeability.tradeable)
+        : classifyUnified(
+            { ...s.scores, composite: effectiveComposite },
+            s.tradeability.tradeable,
+          );
 
       finalRows.push({
         enriched: s.t, enrichment: s.enrichment, tech: s.tech,
         tradeability: s.tradeability, scores: s.scores,
-        classification, category, catalystDate, recommendation,
+        classification, category, catalystDate, recommendation, tier: s.tier,
       });
     }
+
+    const tierCounts: Record<ScanTier, number> = { core: 0, speculative: 0 };
+    for (const r of finalRows) tierCounts[r.tier]++;
+    console.log(`  Tier counts: core=${tierCounts.core}, speculative=${tierCounts.speculative}`);
 
     // 12. Save
     console.log('\n[8/9] Saving results...');
@@ -544,6 +584,7 @@ async function runUnifiedPipeline(): Promise<void> {
           category: r.category,
           catalystDate: r.catalystDate,
           classification: r.classification,
+          tier: r.tier,
         }));
         const decisions = await traderUnified.evaluate(traderInputs, positions, account, tradingConfig);
         const executed = await traderUnified.execute(decisions);
@@ -601,11 +642,12 @@ interface SaveRow {
   category: EntryCategory;
   catalystDate: string | null;
   recommendation: 'BUY' | 'WATCH' | 'AVOID';
+  tier: ScanTier;
 }
 
 async function saveResults(rows: SaveRow[]): Promise<void> {
   for (const row of rows) {
-    const { enriched, enrichment, tech, tradeability, scores, classification, category, catalystDate, recommendation } = row;
+    const { enriched, enrichment, tech, tradeability, scores, classification, category, catalystDate, recommendation, tier } = row;
     const { sentiment, price, fundamentals } = enriched;
 
     const thesisText = classification.thesis.slice(0, 2000);
@@ -745,7 +787,7 @@ async function saveResults(rows: SaveRow[]): Promise<void> {
           tech?.technicalSignal ?? null,
           tech?.signalStrength ?? null,
           // Dual-tier-era columns — now holding unified component scores
-          null, // tier (unused in unified)
+          tier, // 'core' | 'speculative' (migration 011 reuses old column)
           scores.value,
           scores.catalyst,
           scores.upside, // emerging_industry_score repurposed as upside (kept for back-compat)

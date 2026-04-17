@@ -26,6 +26,7 @@ import type {
   EntryCategory,
   PriceData,
   FundamentalData,
+  ScanTier,
   UnifiedClassification,
 } from '../types/index.js';
 
@@ -41,6 +42,7 @@ export interface UnifiedPipelineResult {
   category: EntryCategory;
   catalystDate: string | null;
   classification: UnifiedClassification;
+  tier: ScanTier;
 }
 
 // ── Re-exports (delegate to legacy trader) ──────────────────────
@@ -62,10 +64,10 @@ const CATEGORY_MAX_HOLD_DAYS: Record<EntryCategory, number> = {
   attention_momentum: 7,
 };
 
-const STOP_LOSS_PCT = 12; // position down >= 12% from entry triggers stop
+const STOP_LOSS_PCT = 12; // core position down >= 12% from entry triggers stop
 const CATALYST_FADE_DAYS = 2; // days past catalyst date before fade trigger
 
-// Entry gates
+// Entry gates (core tier)
 const MIN_COMPOSITE = 45;
 const MAX_RISK = 45;
 const MIN_CONVICTION = 6;
@@ -76,6 +78,11 @@ const STANDARD_PCT = 10;
 const HIGH_CONVICTION_MIN_SCORE = 8;
 const HIGH_CONVICTION_MIN_COMPOSITE = 68;
 const MIN_NOTIONAL_USD = 100;
+
+// Speculative composite = attention × 0.7 + catalyst × 0.3
+function speculativeComposite(scores: ComponentScores): number {
+  return scores.attention * 0.7 + scores.catalyst * 0.3;
+}
 
 type ExitReason =
   | 'stop_loss'
@@ -118,29 +125,55 @@ export async function evaluate(
   const resultMap = new Map<string, UnifiedPipelineResult>();
   for (const r of results) resultMap.set(r.ticker, r);
 
+  // Fetch tier of each currently-held position so we can enforce tier-specific
+  // position limits (e.g., speculative cap counted separately from core).
+  const posTiers = await fetchPositionTiers(positions.map((p) => p.ticker));
+
   // SELL / HOLD evaluation for existing positions
   for (const pos of positions) {
     const result = resultMap.get(pos.ticker) ?? null;
-    const sellDecision = await evaluateSell(pos, result, config);
+    const posTier = posTiers.get(pos.ticker) ?? 'core';
+    const sellDecision = await evaluateSell(pos, result, config, posTier);
     decisions.push(sellDecision);
   }
 
   // BUY / SKIP for new tickers (not already held)
   for (const result of results) {
     if (heldTickers.has(result.ticker)) continue;
-    const decision = evaluateBuy(result, positions, account, config);
+    const decision = result.tier === 'speculative'
+      ? evaluateSpeculativeBuy(result, positions, posTiers, account, config)
+      : evaluateBuy(result, positions, posTiers, account, config);
     decisions.push(decision);
   }
 
   return decisions;
 }
 
+async function fetchPositionTiers(tickers: string[]): Promise<Map<string, ScanTier>> {
+  const map = new Map<string, ScanTier>();
+  if (tickers.length === 0) return map;
+  const rows = await db.query<{ ticker: string; tier: string | null }>(
+    `SELECT DISTINCT ON (ticker) ticker, tier
+     FROM portfolio_state
+     WHERE ticker = ANY($1::text[])
+     ORDER BY ticker, created_at DESC`,
+    [tickers],
+  );
+  for (const r of rows) {
+    map.set(r.ticker, (r.tier === 'speculative' ? 'speculative' : 'core'));
+  }
+  return map;
+}
+
 async function evaluateSell(
   position: AlpacaPosition,
   result: UnifiedPipelineResult | null,
-  config: TradingConfig
+  config: TradingConfig,
+  posTier: ScanTier,
 ): Promise<TradeDecision> {
   const ticker = position.ticker;
+  // Speculative positions: tighter stop, shorter max hold, no catalyst-fade logic
+  const stopLossPct = posTier === 'speculative' ? config.speculativeStopLossPct : STOP_LOSS_PCT;
 
   // Pull portfolio_state for category, catalyst date, scan misses, days held
   const stateRows = await db.query<{
@@ -176,38 +209,40 @@ async function evaluateSell(
     exitComponentScores: result ? result.scores : null,
   };
 
-  // 1. Stop-loss: down >= STOP_LOSS_PCT from entry
-  if (position.unrealizedPlPct <= -STOP_LOSS_PCT) {
+  // 1. Stop-loss: down >= stopLossPct from entry (tier-specific)
+  if (position.unrealizedPlPct <= -stopLossPct) {
     extras.exitReason = 'stop_loss';
     return Object.assign(
       {
         ticker,
         action: 'SELL' as const,
-        reason: `Stop-loss: position down ${position.unrealizedPlPct.toFixed(2)}% (limit -${STOP_LOSS_PCT}%)`,
+        reason: `Stop-loss: position down ${position.unrealizedPlPct.toFixed(2)}% (limit -${stopLossPct}%)`,
         quantity: position.quantity,
         classification,
         scores,
         tradeRationale,
+        tier: posTier,
       },
       extras
     );
   }
 
-  // 2. Category max hold exceeded
-  const maxHoldDays = category
-    ? CATEGORY_MAX_HOLD_DAYS[category]
-    : config.holdDaysMax;
+  // 2. Max hold exceeded: speculative uses tier-specific cap, core uses category
+  const maxHoldDays = posTier === 'speculative'
+    ? config.speculativeMaxHoldDays
+    : (category ? CATEGORY_MAX_HOLD_DAYS[category] : config.holdDaysMax);
   if (daysHeld >= maxHoldDays) {
     extras.exitReason = 'max_hold';
     return Object.assign(
       {
         ticker,
         action: 'SELL' as const,
-        reason: `Max hold exceeded (${daysHeld}d >= ${maxHoldDays}d for ${category ?? 'unknown'})`,
+        reason: `Max hold exceeded (${daysHeld}d >= ${maxHoldDays}d for ${posTier === 'speculative' ? 'speculative' : category ?? 'unknown'})`,
         quantity: position.quantity,
         classification,
         scores,
         tradeRationale,
+        tier: posTier,
       },
       extras
     );
@@ -225,13 +260,14 @@ async function evaluateSell(
         classification,
         scores,
         tradeRationale,
+        tier: posTier,
       },
       extras
     );
   }
 
-  // 4. Catalyst fade (earnings_event only): catalyst date passed by > N days
-  if (category === 'earnings_event' && catalystDate) {
+  // 4. Catalyst fade — core tier only (speculative doesn't track catalysts)
+  if (posTier === 'core' && category === 'earnings_event' && catalystDate) {
     const catalystMs = new Date(catalystDate).getTime();
     if (!Number.isNaN(catalystMs)) {
       const daysPast = Math.floor(
@@ -248,6 +284,7 @@ async function evaluateSell(
             classification,
             scores,
             tradeRationale,
+            tier: posTier,
           },
           extras
         );
@@ -267,6 +304,7 @@ async function evaluateSell(
         classification,
         scores,
         tradeRationale,
+        tier: posTier,
       },
       extras
     );
@@ -276,16 +314,18 @@ async function evaluateSell(
   return {
     ticker,
     action: 'HOLD',
-    reason: `Holding (${daysHeld}d, P/L ${position.unrealizedPlPct.toFixed(1)}%, misses ${scanMisses}, ${category ?? 'no-cat'})`,
+    reason: `Holding [${posTier}] (${daysHeld}d, P/L ${position.unrealizedPlPct.toFixed(1)}%, misses ${scanMisses})`,
     classification,
     scores,
     tradeRationale,
+    tier: posTier,
   };
 }
 
 function evaluateBuy(
   result: UnifiedPipelineResult,
   positions: AlpacaPosition[],
+  posTiers: Map<string, ScanTier>,
   account: AlpacaAccount,
   config: TradingConfig
 ): TradeDecision {
@@ -295,12 +335,19 @@ function evaluateBuy(
   const tradeRationale = result.classification.thesis;
   const keyRisk = result.classification.keyRisks[0];
 
+  // Core tier only counts core positions against max_positions (speculative
+  // positions are tracked separately and don't compete for core slots).
+  const corePositions = positions.filter(
+    (p) => (posTiers.get(p.ticker) ?? 'core') === 'core',
+  );
+
   const baseDecision = {
     ticker,
     classification,
     scores,
     tradeRationale,
     keyRisk,
+    tier: 'core' as ScanTier,
   };
 
   // Gate: tradeable
@@ -377,8 +424,9 @@ function evaluateBuy(
   }
 
   // Shared risk checks (max positions, portfolio heat, daily loss, dupes, buying power)
+  // Pass only core positions so speculative tier doesn't consume core slots.
   const actualOrderValue = quantity * price;
-  const riskCheck = validateBuy(ticker, actualOrderValue, account, positions, config);
+  const riskCheck = validateBuy(ticker, actualOrderValue, account, corePositions, config);
   if (!riskCheck.approved) {
     return {
       ...baseDecision,
@@ -407,6 +455,147 @@ function evaluateBuy(
       configSnapshot: config,
     },
     extras
+  );
+}
+
+// ── Speculative Buy ──────────────────────────────────────────────
+// Loosened entry gates paired with small position sizing and a tight stop.
+// Intended for meme/squeeze candidates — see migration 011 for rationale.
+function evaluateSpeculativeBuy(
+  result: UnifiedPipelineResult,
+  positions: AlpacaPosition[],
+  posTiers: Map<string, ScanTier>,
+  account: AlpacaAccount,
+  config: TradingConfig,
+): TradeDecision {
+  const ticker = result.ticker;
+  const scores = toLegacyScores(result.scores);
+  const tradeRationale = result.classification.thesis;
+  const keyRisk = result.classification.keyRisks[0];
+
+  const specPositions = positions.filter(
+    (p) => posTiers.get(p.ticker) === 'speculative',
+  );
+
+  const baseDecision = {
+    ticker,
+    classification: result.classification.recommendation,
+    scores,
+    tradeRationale,
+    keyRisk,
+    tier: 'speculative' as ScanTier,
+  };
+
+  // Kill switch
+  if (!config.speculativeEnabled) {
+    return { ...baseDecision, action: 'SKIP', reason: 'Speculative tier disabled' };
+  }
+
+  // Must pass speculative tradeability gates
+  if (!result.tradeable) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Not tradeable (spec): ${result.gateFailures.join(', ') || 'gate failure'}`,
+    };
+  }
+
+  // Speculative composite threshold
+  const specComp = speculativeComposite(result.scores);
+  if (specComp < config.speculativeMinComposite) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Speculative composite ${specComp.toFixed(1)} < ${config.speculativeMinComposite}`,
+    };
+  }
+
+  // Daily loss limit still applies (shared risk check)
+  if (account.dayPlPct <= -config.dailyLossLimitPct) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Daily loss limit hit (${account.dayPlPct.toFixed(2)}% <= -${config.dailyLossLimitPct}%)`,
+    };
+  }
+
+  // Dedup
+  if (positions.some((p) => p.ticker === ticker)) {
+    return { ...baseDecision, action: 'SKIP', reason: `Already holding ${ticker}` };
+  }
+
+  // Speculative slot cap
+  if (specPositions.length >= config.speculativeMaxPositions) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Speculative max positions reached (${specPositions.length}/${config.speculativeMaxPositions})`,
+    };
+  }
+
+  // Speculative portfolio heat cap (counted separately from core)
+  const specExposure = specPositions.reduce((sum, p) => sum + p.marketValue, 0);
+  const specHeatPct = (specExposure / account.portfolioValue) * 100;
+  const prospectivePct = specHeatPct + config.speculativePositionPct;
+  if (prospectivePct > config.speculativePortfolioHeatPct) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Speculative heat would hit ${prospectivePct.toFixed(1)}% > ${config.speculativePortfolioHeatPct}%`,
+    };
+  }
+
+  // Sizing
+  const sizePct = config.speculativePositionPct;
+  const rawOrderValue = account.portfolioValue * (sizePct / 100);
+  const orderValue = rawOrderValue * (1 - config.slippagePct / 100);
+  const price = result.price.price;
+
+  if (orderValue < MIN_NOTIONAL_USD) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Budget $${orderValue.toFixed(2)} below min $${MIN_NOTIONAL_USD}`,
+    };
+  }
+
+  const quantity = Math.floor(orderValue / price);
+  if (quantity <= 0) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Position too small (price $${price.toFixed(2)}, budget $${orderValue.toFixed(2)})`,
+    };
+  }
+
+  const actualOrderValue = quantity * price;
+  if (actualOrderValue > account.buyingPower) {
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Insufficient buying power ($${actualOrderValue.toFixed(2)} > $${account.buyingPower.toFixed(2)})`,
+    };
+  }
+
+  const extras: UnifiedDecisionExtras = {
+    entryCategory: result.category,
+    entryCatalystDate: result.catalystDate,
+    entryComponentScores: result.scores,
+  };
+
+  return Object.assign(
+    {
+      ...baseDecision,
+      action: 'BUY' as const,
+      reason:
+        `speculative — A:${result.scores.attention.toFixed(0)} C:${result.scores.catalyst.toFixed(0)} ` +
+        `SpecComp:${specComp.toFixed(1)} (min ${config.speculativeMinComposite})`,
+      quantity,
+      positionSizePct: sizePct,
+      stopLoss: price * (1 - config.speculativeStopLossPct / 100),
+      configSnapshot: config,
+    },
+    extras,
   );
 }
 
@@ -478,7 +667,7 @@ export async function logDecisions(
           entry_value_score, entry_catalyst_score, entry_upside_score,
           entry_risk_score, entry_composite,
           entry_category, entry_catalyst_type, entry_catalyst_date,
-          created_at, updated_at
+          tier, created_at, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7,
           $8, $9, $10, $11, $12,
@@ -487,7 +676,7 @@ export async function logDecisions(
           $19, $20, $21,
           $22, $23,
           $24, $25, $26,
-          NOW(), NOW()
+          $27, NOW(), NOW()
         )`,
         [
           uuidv4(),
@@ -516,6 +705,7 @@ export async function logDecisions(
           extras.entryCategory ?? null,
           extras.entryCategory ?? null, // catalyst_type == category for now
           extras.entryCatalystDate ?? null,
+          d.tier ?? 'core',
         ]
       );
     } else if (d.action === 'SELL') {
@@ -532,12 +722,12 @@ export async function logDecisions(
           id, scan_result_id, run_id, ticker, action, quantity, order_type,
           alpaca_order_id, status, classification, confidence, scores,
           trade_rationale, key_risk, position_size_pct, stop_loss,
-          target_price, config_snapshot, created_at, updated_at
+          target_price, config_snapshot, tier, created_at, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7,
           $8, $9, $10, $11, $12,
           $13, $14, $15, $16,
-          $17, $18, NOW(), NOW()
+          $17, $18, $19, NOW(), NOW()
         )`,
         [
           uuidv4(),
@@ -558,6 +748,7 @@ export async function logDecisions(
           d.stopLoss ?? null,
           d.targetPrice ?? null,
           d.configSnapshot ? JSON.stringify(d.configSnapshot) : null,
+          d.tier ?? 'core',
         ]
       );
 
@@ -639,10 +830,11 @@ export async function updatePortfolioState(
       target_price: number | null;
       entry_category: EntryCategory | null;
       entry_catalyst_date: string | null;
+      tier: string | null;
     }>(
       `SELECT consecutive_scan_misses, entry_date, days_held,
               classification_at_entry, stop_loss, target_price,
-              entry_category, entry_catalyst_date
+              entry_category, entry_catalyst_date, tier
        FROM portfolio_state
        WHERE ticker = $1
        ORDER BY created_at DESC
@@ -676,18 +868,24 @@ export async function updatePortfolioState(
     const entryCategory = prev?.entry_category ?? result?.category ?? null;
     const entryCatalystDate =
       prev?.entry_catalyst_date ?? result?.catalystDate ?? null;
+    // Tier persists from the prior state if known; otherwise use the current
+    // scan's tier (in case this is the first row after a fill). Default core.
+    const tier: ScanTier =
+      prev?.tier === 'speculative' ? 'speculative'
+      : prev?.tier === 'core' ? 'core'
+      : (result?.tier ?? 'core');
 
     await db.query(
       `INSERT INTO portfolio_state (
         id, run_id, ticker, quantity, avg_entry_price, current_price,
         unrealized_pl_pct, entry_date, days_held, classification_at_entry,
         stop_loss, target_price, consecutive_scan_misses,
-        entry_category, entry_catalyst_date, created_at
+        entry_category, entry_catalyst_date, tier, created_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10,
         $11, $12, $13,
-        $14, $15, NOW()
+        $14, $15, $16, NOW()
       )
       ON CONFLICT (run_id, ticker) DO UPDATE SET
         quantity = EXCLUDED.quantity,
@@ -699,7 +897,8 @@ export async function updatePortfolioState(
         target_price = EXCLUDED.target_price,
         consecutive_scan_misses = EXCLUDED.consecutive_scan_misses,
         entry_category = EXCLUDED.entry_category,
-        entry_catalyst_date = EXCLUDED.entry_catalyst_date`,
+        entry_catalyst_date = EXCLUDED.entry_catalyst_date,
+        tier = EXCLUDED.tier`,
       [
         uuidv4(),
         runId,
@@ -716,6 +915,7 @@ export async function updatePortfolioState(
         scanMisses,
         entryCategory,
         entryCatalystDate,
+        tier,
       ]
     );
   }
