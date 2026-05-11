@@ -440,3 +440,18 @@ export interface ExitAttribution {
   composite: number;
   reason: 'stop_loss' | 'catalyst_fade' | 'max_hold' | 'reclass_avoid' | 'scan_miss' | 'manual';
 }
+
+// ── Sector Pass Types (2026-05-11) ─────────────────────
+
+export interface SectorCandidate {
+  ticker: string;
+  sector: string;
+  suggestedTier: 'momentum' | 'quality' | 'speculative';
+  rationale: string;
+  whyNow: string;
+}
+
+export interface SectorPassOutput {
+  topSectors: Array<{ sector: string; rationale: string }>;
+  candidates: SectorCandidate[];
+}
