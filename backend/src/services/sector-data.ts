@@ -42,6 +42,12 @@ const SECTOR_ETFS: Array<{ ticker: string; sector: string }> = [
 // fetchWithRetry returns a parsed JSON body (T), not a Response.
 // For HTML/XML endpoints we fall back to plain fetch() — same pattern as finviz.ts.
 
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// Finviz uses one-word "Healthcare" while our SECTOR_ETFS table uses GICS "Health Care".
+// Compare via this normalizer so neither rendering silently drops the XLV row.
+const normalizeSector = (s: string): string => s.toLowerCase().replace(/\s+/g, '');
+
 interface YahooChartResponse {
   chart?: {
     result?: Array<{
@@ -73,7 +79,9 @@ export async function fetchSectorEtfPerf(): Promise<SectorEtfRow[]> {
       const close1mo = closes[closes.length - 22];
       const close3mo = closes[0];
       const pct = (from: number | undefined, to: number | undefined): number | null =>
-        from && to ? ((to - from) / from) * 100 : null;
+        typeof from === 'number' && typeof to === 'number' && from !== 0
+          ? ((to - from) / from) * 100
+          : null;
       const recentVolumes = volumes.slice(-20).filter((v) => v != null);
       const avgVol =
         recentVolumes.length > 0
@@ -101,11 +109,13 @@ export async function fetchSectorEtfPerf(): Promise<SectorEtfRow[]> {
 export async function fetchFinvizSectors(): Promise<FinvizSectorRow[]> {
   try {
     const url = 'https://finviz.com/groups.ashx?g=sector&v=110';
-    // Plain fetch for HTML — fetchWithRetry only handles JSON
+    // Plain fetch for HTML — fetchWithRetry only handles JSON.
+    // Use the same full UA + Accept header as finviz.ts; a bare "Mozilla/5.0"
+    // is a known bot fingerprint Finviz returns 403 / CAPTCHA for.
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
+      headers: { 'Accept': 'text/html,application/xhtml+xml', 'User-Agent': BROWSER_UA },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -122,9 +132,13 @@ export async function fetchFinvizSectors(): Promise<FinvizSectorRow[]> {
         cells.push(c[1].replace(/<[^>]+>/g, '').trim());
       }
       if (cells.length < 10) continue;
-      const sector = cells[1] || cells[0];
-      const knownSectors = SECTOR_ETFS.map((s) => s.sector);
-      if (!knownSectors.includes(sector)) continue;
+      const finvizSector = cells[1] || cells[0];
+      // Match canonical name via normalized key, then re-emit the GICS name we know.
+      const matched = SECTOR_ETFS.find(
+        (s) => normalizeSector(s.sector) === normalizeSector(finvizSector)
+      );
+      if (!matched) continue;
+      const sector = matched.sector;
       const parsePct = (s: string | undefined): number | null => {
         if (!s) return null;
         const cleaned = s.replace('%', '').trim();
