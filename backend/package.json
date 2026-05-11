@@ -10,6 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "pipeline": "tsx src/pipeline-unified.ts",
     "pipeline-legacy": "tsx src/pipeline.ts",
+    "sector-research": "tsx src/sector-research.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "returns": "tsx src/return-tracker.ts"
   },
