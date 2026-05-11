@@ -164,6 +164,38 @@ async function fetchAllSentimentData(): Promise<{
   return { sentiment: results, finvizSourcesByTicker };
 }
 
+// ── Sector research candidates (from daily-cron sector analysis) ─────────
+
+// Sector research candidates from today's daily cron output.
+// Reads-and-marks: returns unused rows AND marks them used_in_run_id in one transaction.
+async function fetchSectorResearchCandidates(runId: string): Promise<Array<{ ticker: string; source: string; sector: string; tier: string }>> {
+  try {
+    const rows = await db.query<{ ticker: string; sector: string; suggested_tier: string }>(
+      `WITH picked AS (
+         SELECT id, ticker, sector, suggested_tier
+         FROM sector_candidates
+         WHERE run_date = CURRENT_DATE AND used_in_run_id IS NULL
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE sector_candidates sc
+          SET used_in_run_id = $1
+         FROM picked p
+        WHERE sc.id = p.id
+       RETURNING p.ticker, p.sector, p.suggested_tier`,
+      [runId]
+    );
+    return rows.map((r) => ({
+      ticker: r.ticker.toUpperCase(),
+      source: 'sector-research',
+      sector: r.sector,
+      tier: r.suggested_tier,
+    }));
+  } catch (e) {
+    console.warn(`[pipeline-unified] sector-research fetch failed: ${(e as Error).message}`);
+    return [];
+  }
+}
+
 // ── Merge sentiment (copied from pipeline.ts) ────────────────────────────
 
 function mergeSentimentByTicker(data: SentimentData[]): Record<string, MergedSentiment> {
@@ -281,6 +313,8 @@ function selectTopCandidates(
   reserve(scored.filter((c) => hasFinvizScreen(c, 'earnings_catalyst')), 3);
   reserve(scored.filter((c) => hasFinvizScreen(c, 'analyst_upgrade')), 3);
   reserve(scored.filter((c) => hasFinvizScreen(c, 'insider_buying')), 3);
+  // Sector research: daily-cron sector analysis candidates
+  reserve(scored.filter((c) => hasSource(c, 'sector-research')), 4);
 
   // Fill remaining slots by pure score from unpicked tickers
   for (const c of scored) {
@@ -362,6 +396,19 @@ async function runUnifiedPipeline(): Promise<void> {
     // 2. Sentiment
     console.log('[1/9] Fetching sentiment data...');
     const { sentiment, finvizSourcesByTicker } = await fetchAllSentimentData();
+
+    console.log('  - Sector research candidates...');
+    const sectorCandidates = await fetchSectorResearchCandidates(RUN_ID);
+    for (const sc of sectorCandidates) {
+      sentiment.push({
+        ticker: sc.ticker,
+        source: 'sector-research',
+        mentions: 1,
+        sentiment: 75,
+        rank: 0,
+      });
+    }
+    console.log(`    ${sectorCandidates.length} entries`);
     console.log(`  Found ${sentiment.length} sentiment records`);
 
     // 3. Merge

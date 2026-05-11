@@ -1,7 +1,7 @@
 // Sentiment data from aggregators
 export interface SentimentData {
   ticker: string;
-  source: 'swaggy' | 'apewisdom-all' | 'apewisdom-penny' | 'apewisdom-wsb' | 'altindex' | 'stocktwits' | 'finviz';
+  source: 'swaggy' | 'apewisdom-all' | 'apewisdom-penny' | 'apewisdom-wsb' | 'altindex' | 'stocktwits' | 'finviz' | 'sector-research';
   mentions: number;
   sentiment: number; // -100 to 100
   momentum?: number; // ratio vs previous period
@@ -25,6 +25,7 @@ export interface MergedSentiment {
     altindex?: SentimentData;
     stocktwits?: SentimentData;
     finviz?: SentimentData;
+    'sector-research'?: SentimentData;
   };
 }
 
