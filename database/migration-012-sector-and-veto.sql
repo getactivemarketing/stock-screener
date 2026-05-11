@@ -8,12 +8,12 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS sector_candidates (
   id SERIAL PRIMARY KEY,
   run_date DATE NOT NULL,
-  ticker TEXT NOT NULL,
+  ticker VARCHAR(10) NOT NULL,
   sector TEXT,
   rationale TEXT,
   why_now TEXT,
   suggested_tier TEXT CHECK (suggested_tier IN ('momentum', 'quality', 'speculative')),
-  used_in_run_id INT REFERENCES scan_runs(id),
+  used_in_run_id UUID REFERENCES scan_runs(run_id),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (run_date, ticker)
 );
