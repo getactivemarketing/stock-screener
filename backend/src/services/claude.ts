@@ -43,6 +43,21 @@ export function estimateCostUsd(r: ClaudeCallResult<unknown>): number {
 
 export async function callClaudeJson<T>(opts: ClaudeCallOptions): Promise<ClaudeCallResult<T>> {
   const started = Date.now();
+  if (!config.anthropicApiKey) {
+    const err = 'ANTHROPIC_API_KEY is not set';
+    console.error(`[claude] model=${opts.model} ERROR: ${err}`);
+    return {
+      parsed: null,
+      raw: '',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      latencyMs: Date.now() - started,
+      model: opts.model,
+      error: err,
+    };
+  }
   try {
     const res = await client.messages.create({
       model: opts.model,
