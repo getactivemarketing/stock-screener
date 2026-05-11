@@ -17,6 +17,9 @@ const configSchema = z.object({
   // LLM (Perplexity)
   perplexityApiKey: z.string().default(''),
 
+  // LLM (Anthropic) — for sector pass + veto layer
+  anthropicApiKey: z.string().default(''),
+
   // Alerts (optional)
   slackWebhookUrl: z.string().url().optional().or(z.literal('')),
   discordWebhookUrl: z.string().url().optional().or(z.literal('')),
@@ -40,6 +43,7 @@ const parsed = configSchema.safeParse({
   finnhubApiKey: process.env.FINNHUB_API_KEY,
   polygonApiKey: process.env.POLYGON_API_KEY,
   perplexityApiKey: process.env.PERPLEXITY_API_KEY,
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY,
   slackWebhookUrl: process.env.SLACK_WEBHOOK_URL,
   discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL,
   sendgridApiKey: process.env.SENDGRID_API_KEY,
