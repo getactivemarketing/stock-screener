@@ -16,6 +16,8 @@ import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
 } from './trader.js';
+import { runVeto } from './veto.js';
+import type { VetoContext } from './veto-prompts.js';
 import type {
   TradingConfig,
   TradeDecision,
@@ -28,6 +30,7 @@ import type {
   FundamentalData,
   ScanTier,
   UnifiedClassification,
+  VetoResult,
 } from '../types/index.js';
 
 // ── Input shape (caller assembles from scan_results row) ────────
@@ -100,6 +103,12 @@ interface UnifiedDecisionExtras {
   exitComponentScores?: ComponentScores | null;
   exitReason?: ExitReason;
   alpacaOrderId?: string;
+  // Veto layer (migration 012)
+  vetoRan?: boolean;
+  vetoResult?: VetoResult;
+  vetoModel?: string;
+  vetoLatencyMs?: number;
+  vetoFailed?: boolean;
 }
 
 // Convert ComponentScores to legacy Scores for TradeDecision.scores field
@@ -140,13 +149,112 @@ export async function evaluate(
   // BUY / SKIP for new tickers (not already held)
   for (const result of results) {
     if (heldTickers.has(result.ticker)) continue;
-    const decision = result.tier === 'speculative'
+    let decision = result.tier === 'speculative'
       ? evaluateSpeculativeBuy(result, positions, posTiers, account, config)
       : evaluateBuy(result, positions, posTiers, account, config);
+
+    // Veto gate: only runs on BUY-grade candidates, gated by config flag
+    if (decision.action === 'BUY' && config.vetoLayerEnabled) {
+      decision = await applyVetoGate(decision, result, config);
+    }
+
     decisions.push(decision);
   }
 
   return decisions;
+}
+
+// ── Veto Gate ───────────────────────────────────────────────────
+// Called from evaluate() on any BUY candidate when vetoLayerEnabled=true.
+// Builds a VetoContext from the candidate data, calls runVeto(), and either
+// returns the original BUY decision (confirmed / fail-open) or a SKIP
+// decision (blocked by veto when vetoLayerEnforce=true).
+// Veto data is always attached to the decision via UnifiedDecisionExtras so
+// logDecisions() can persist the 7 veto_* columns regardless of enforce mode.
+async function applyVetoGate(
+  decision: TradeDecision,
+  result: UnifiedPipelineResult,
+  config: TradingConfig,
+): Promise<TradeDecision> {
+  const ticker = result.ticker;
+
+  // Build source breakdown string from sentiment sources (if available via
+  // scan_results enrichment — not directly on UnifiedPipelineResult, so null).
+  const vetoCtx: VetoContext = {
+    ticker,
+    tier: result.tier === 'speculative' ? 'speculative' : 'quality',
+    price: result.price.price,
+    marketCap: result.fundamentals.marketCap ?? null,
+    sector: result.fundamentals.sector ?? null,
+    // Classifier scores
+    composite: result.scores.composite,
+    valueScore: result.scores.value,
+    catalystScore: result.scores.catalyst,
+    upsideScore: result.scores.upside,
+    riskScore: result.scores.risk,
+    conviction: result.classification.convictionScore,
+    category: result.category,
+    thesis: result.classification.thesis,
+    edgeWhyNow: result.classification.valueCase ?? '',
+    expectedReturnPct: result.classification.expectedReturn30d ?? null,
+    stopLossPct: null,                        // not on UnifiedPipelineResult
+    // Sentiment + price action
+    mentionCount: 0,                          // not on UnifiedPipelineResult
+    sourceBreakdown: '',                      // not on UnifiedPipelineResult
+    change1dPct: result.price.change1dPercent,
+    change5dPct: result.price.change5dPercent,
+    // Enrichment (not on UnifiedPipelineResult — no TickerAnalysis.enrichment here)
+    analystTargetMean: null,                  // not on UnifiedPipelineResult
+    daysToEarnings: null,                     // not on UnifiedPipelineResult
+    recentNews: [],                           // not on UnifiedPipelineResult
+  };
+
+  const t0 = Date.now();
+  const vetoCall = await runVeto(vetoCtx);
+  const latencyMs = Date.now() - t0;
+
+  const { result: vr, failed, model } = vetoCall;
+
+  console.log(
+    `[trader] veto ${ticker}: verdict=${vr.verdict} confidence=${vr.confidence} failed=${failed} latency=${latencyMs}ms`
+  );
+
+  // Attach veto metadata to decision extras regardless of enforce mode
+  // so logDecisions() can always persist the 7 veto_* columns.
+  const extrasWithVeto: UnifiedDecisionExtras = {
+    ...(decision as TradeDecision & UnifiedDecisionExtras),
+    vetoRan: true,
+    vetoResult: vr,
+    vetoModel: model,
+    vetoLatencyMs: latencyMs,
+    vetoFailed: failed,
+  };
+
+  // vetoBlocks = enforce enabled AND veto actually ran (not failed) AND verdict != confirm
+  const vetoBlocks =
+    config.vetoLayerEnforce &&
+    !failed &&
+    vr.verdict !== 'confirm';
+
+  if (vetoBlocks) {
+    console.log(`[trader] BUY BLOCKED by veto: ${ticker} (verdict=${vr.verdict})`);
+    return Object.assign(
+      {
+        ticker,
+        action: 'SKIP' as const,
+        reason: `BUY blocked by veto: ${vr.verdict} (confidence ${vr.confidence}) — ${vr.reasoning.slice(0, 120)}`,
+        classification: decision.classification,
+        scores: decision.scores,
+        tradeRationale: decision.tradeRationale,
+        keyRisk: vr.keyRisk,
+        tier: decision.tier,
+      },
+      extrasWithVeto,
+    );
+  }
+
+  // Not blocked — return original BUY with veto data attached
+  return Object.assign({}, decision, extrasWithVeto);
 }
 
 async function fetchPositionTiers(tickers: string[]): Promise<Map<string, ScanTier>> {
@@ -783,20 +891,84 @@ export async function logDecisions(
         ]
       );
     } else {
-      // HOLD / SKIP
-      await db.query(
-        `INSERT INTO trade_decisions (id, run_id, ticker, action, reason, classification, scores, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-        [
-          uuidv4(),
-          runId,
-          d.ticker,
-          d.action,
-          d.reason,
-          d.classification,
-          JSON.stringify(d.scores),
-        ]
-      );
+      // HOLD / SKIP (includes veto-blocked BUYs which are downgraded to SKIP)
+      const vetoExtras = extras as TradeDecision & UnifiedDecisionExtras;
+      const hasVeto = vetoExtras.vetoRan === true && vetoExtras.vetoResult != null;
+      if (hasVeto) {
+        const vr = vetoExtras.vetoResult!;
+        await db.query(
+          `INSERT INTO trade_decisions (
+            id, run_id, ticker, action, reason, classification, scores,
+            veto_verdict, veto_confidence, veto_reasoning, veto_key_risk,
+            veto_contradictions, veto_model, veto_latency_ms,
+            created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())`,
+          [
+            uuidv4(),
+            runId,
+            d.ticker,
+            d.action,
+            d.reason,
+            d.classification,
+            JSON.stringify(d.scores),
+            vr.verdict,
+            vr.confidence,
+            vr.reasoning,
+            vr.keyRisk,
+            JSON.stringify(vr.thesisContradictions),
+            vetoExtras.vetoModel ?? null,
+            vetoExtras.vetoLatencyMs ?? null,
+          ]
+        );
+      } else {
+        await db.query(
+          `INSERT INTO trade_decisions (id, run_id, ticker, action, reason, classification, scores, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+          [
+            uuidv4(),
+            runId,
+            d.ticker,
+            d.action,
+            d.reason,
+            d.classification,
+            JSON.stringify(d.scores),
+          ]
+        );
+      }
+    }
+
+    // For BUY decisions that had veto run (non-blocked), also persist veto
+    // data to trade_decisions so both confirmed and blocked verdicts land in
+    // the same table for cohort analysis (the plan's measurement query).
+    if (d.action === 'BUY') {
+      const vetoExtras = extras as TradeDecision & UnifiedDecisionExtras;
+      if (vetoExtras.vetoRan === true && vetoExtras.vetoResult != null) {
+        const vr = vetoExtras.vetoResult;
+        await db.query(
+          `INSERT INTO trade_decisions (
+            id, run_id, ticker, action, reason, classification, scores,
+            veto_verdict, veto_confidence, veto_reasoning, veto_key_risk,
+            veto_contradictions, veto_model, veto_latency_ms,
+            created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())`,
+          [
+            uuidv4(),
+            runId,
+            d.ticker,
+            'SKIP',  // closest allowed action value; veto_verdict='confirm' distinguishes it
+            `veto shadow log: verdict=${vr.verdict} (order placed)`,
+            d.classification,
+            JSON.stringify(d.scores),
+            vr.verdict,
+            vr.confidence,
+            vr.reasoning,
+            vr.keyRisk,
+            JSON.stringify(vr.thesisContradictions),
+            vetoExtras.vetoModel ?? null,
+            vetoExtras.vetoLatencyMs ?? null,
+          ]
+        );
+      }
     }
   }
 

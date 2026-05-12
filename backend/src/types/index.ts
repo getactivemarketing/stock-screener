@@ -1,7 +1,7 @@
 // Sentiment data from aggregators
 export interface SentimentData {
   ticker: string;
-  source: 'swaggy' | 'apewisdom-all' | 'apewisdom-penny' | 'apewisdom-wsb' | 'altindex' | 'stocktwits' | 'finviz';
+  source: 'swaggy' | 'apewisdom-all' | 'apewisdom-penny' | 'apewisdom-wsb' | 'altindex' | 'stocktwits' | 'finviz' | 'sector-research';
   mentions: number;
   sentiment: number; // -100 to 100
   momentum?: number; // ratio vs previous period
@@ -25,6 +25,7 @@ export interface MergedSentiment {
     altindex?: SentimentData;
     stocktwits?: SentimentData;
     finviz?: SentimentData;
+    'sector-research'?: SentimentData;
   };
 }
 
@@ -251,6 +252,10 @@ export interface TradingConfig {
   speculativeStopLossPct: number;
   speculativeMaxHoldDays: number;
   speculativeMinComposite: number;
+  // Classifier augmentation (migration 012)
+  sectorResearchEnabled: boolean;
+  vetoLayerEnabled: boolean;
+  vetoLayerEnforce: boolean;
 }
 
 // Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is
@@ -439,4 +444,29 @@ export interface ExitAttribution {
   riskScore: number;
   composite: number;
   reason: 'stop_loss' | 'catalyst_fade' | 'max_hold' | 'reclass_avoid' | 'scan_miss' | 'manual';
+}
+
+// ── Sector Pass Types (2026-05-11) ─────────────────────
+
+export interface SectorCandidate {
+  ticker: string;
+  sector: string;
+  suggestedTier: 'momentum' | 'quality' | 'speculative';
+  rationale: string;
+  whyNow: string;
+}
+
+export interface SectorPassOutput {
+  topSectors: Array<{ sector: string; rationale: string }>;
+  candidates: SectorCandidate[];
+}
+
+export type VetoVerdict = 'confirm' | 'veto' | 'downgrade_to_watch';
+
+export interface VetoResult {
+  verdict: VetoVerdict;
+  confidence: number; // 0-100
+  reasoning: string;
+  keyRisk: string;
+  thesisContradictions: string[];
 }
