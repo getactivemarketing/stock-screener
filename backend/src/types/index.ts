@@ -252,6 +252,10 @@ export interface TradingConfig {
   speculativeStopLossPct: number;
   speculativeMaxHoldDays: number;
   speculativeMinComposite: number;
+  // Classifier augmentation (migration 012)
+  sectorResearchEnabled: boolean;
+  vetoLayerEnabled: boolean;
+  vetoLayerEnforce: boolean;
 }
 
 // Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is

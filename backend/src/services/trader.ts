@@ -63,6 +63,10 @@ export async function loadTradingConfig(): Promise<TradingConfig> {
     speculativeStopLossPct: Number(row.speculative_stop_loss_pct) || 15.0,
     speculativeMaxHoldDays: Number(row.speculative_max_hold_days) || 5,
     speculativeMinComposite: Number(row.speculative_min_composite) || 50.0,
+    // Classifier augmentation (migration 012)
+    sectorResearchEnabled: (row.sector_research_enabled as boolean) ?? true,
+    vetoLayerEnabled: (row.veto_layer_enabled as boolean) ?? false,
+    vetoLayerEnforce: (row.veto_layer_enforce as boolean) ?? false,
   };
 }
 
