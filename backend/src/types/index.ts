@@ -456,3 +456,13 @@ export interface SectorPassOutput {
   topSectors: Array<{ sector: string; rationale: string }>;
   candidates: SectorCandidate[];
 }
+
+export type VetoVerdict = 'confirm' | 'veto' | 'downgrade_to_watch';
+
+export interface VetoResult {
+  verdict: VetoVerdict;
+  confidence: number; // 0-100
+  reasoning: string;
+  keyRisk: string;
+  thesisContradictions: string[];
+}
