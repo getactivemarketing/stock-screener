@@ -60,9 +60,7 @@ async function main() {
 
     if (etfs.length === 0 && finviz.length === 0) {
       console.error('[sector-research] ALL data sources failed; aborting Claude call');
-      clearTimeout(timeout);
-      await db.close();
-      return;
+      return; // finally block handles cleanup
     }
 
     const userPrompt = buildSectorUserPrompt({
@@ -82,17 +80,13 @@ async function main() {
 
     if (result.error || !result.parsed) {
       console.error('[sector-research] Claude call failed; writing 0 candidates');
-      clearTimeout(timeout);
-      await db.close();
-      return;
+      return; // finally block handles cleanup
     }
 
     const parsed: SectorPassOutput | null = parseSectorResponse(result.parsed);
     if (!parsed) {
       console.error('[sector-research] response did not match schema; writing 0 candidates');
-      clearTimeout(timeout);
-      await db.close();
-      return;
+      return; // finally block handles cleanup
     }
 
     console.log(`[sector-research] writing ${parsed.candidates.length} candidates to DB`);
