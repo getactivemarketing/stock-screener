@@ -1,0 +1,12 @@
+# backend/railway.sector.toml
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm run sector-research"
+restartPolicyType = "never"
+
+# Run daily at 8am ET (13:00 UTC) — before the first 14:00 UTC pipeline cron of the day
+# so today's sector candidates are available when the pipeline picks them up.
+[cron]
+schedule = "0 13 * * 1-5"
