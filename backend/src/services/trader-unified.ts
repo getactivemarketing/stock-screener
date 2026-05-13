@@ -71,7 +71,8 @@ const STOP_LOSS_PCT = 12; // core position down >= 12% from entry triggers stop
 const CATALYST_FADE_DAYS = 2; // days past catalyst date before fade trigger
 
 // Entry gates (core tier)
-const MIN_COMPOSITE = 45;
+// Hotfix 2026-05-13: MIN_COMPOSITE 45 → 40. See scoring.ts:classifyUnified comment.
+const MIN_COMPOSITE = 40;
 const MAX_RISK = 45;
 const MIN_CONVICTION = 6;
 
