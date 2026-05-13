@@ -843,8 +843,8 @@ async function saveResults(rows: SaveRow[]): Promise<void> {
           null, // industry_theme (migration 010 introduced dedicated entry_category column)
           null, // stop_loss_pct
           null, // expected_returns JSONB (migration 010 introduced dedicated composite_score/expected_return_30d columns)
-          // Enrichment
-          enrichment?.analystRatings?.meanTarget ?? null,
+          // Enrichment (Perplexity rarely returns meanTarget — fall back to Yahoo)
+          enrichment?.analystRatings?.meanTarget ?? enriched.yahoo?.targetMeanPrice ?? null,
           enrichment?.analystRatings?.summary ?? null,
           enrichment?.earnings?.nextDate ?? null,
           enrichment?.earnings?.daysToEarnings ?? null,
