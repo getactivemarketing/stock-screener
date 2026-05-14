@@ -51,7 +51,7 @@ const parsed = configSchema.safeParse({
   alpacaApiKey: process.env.ALPACA_API_KEY,
   alpacaApiSecret: process.env.ALPACA_API_SECRET,
   alpacaPaper: process.env.ALPACA_PAPER,
-  nodeEnv: process.env.NODE_ENV,
+  nodeEnv: process.env.NODE_ENV || undefined,
 });
 
 if (!parsed.success) {
