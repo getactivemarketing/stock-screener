@@ -270,6 +270,16 @@ interface UnifiedContext {
   yahoo: YahooQuoteSummary | null;
   enrichment?: ClassifierEnrichment;
   scores: ComponentScores;
+  // Populated only when the ticker entered the pipeline via the daily
+  // sector-research cron. The catalyst score formula is earnings-driven
+  // (up to 30 pts for d2e<=5); sector-momentum candidates need this
+  // context to give the AI a fair shot at conviction.
+  sectorContext?: {
+    sector?: string;
+    tier?: string;
+    rationale?: string;
+    whyNow?: string;
+  };
 }
 
 export async function generateUnifiedAnalysis(
@@ -298,7 +308,7 @@ export async function generateUnifiedAnalysis(
 }
 
 function buildUnifiedPrompt(ctx: UnifiedContext): string {
-  const { ticker, price, fundamentals, yahoo, enrichment, scores } = ctx;
+  const { ticker, price, fundamentals, yahoo, enrichment, scores, sectorContext } = ctx;
 
   const analystLine = yahoo?.targetMeanPrice
     ? `Mean target $${yahoo.targetMeanPrice.toFixed(2)} (${yahoo.numberOfAnalystOpinions} analysts), rec mean ${yahoo.recommendationMean ?? 'n/a'}`
@@ -335,7 +345,12 @@ Earnings: ${earningsLine}
 Insiders: ${insiderLine}
 Recent news:
 ${headlines}
-
+${sectorContext ? `
+SECTOR-RESEARCH FLAG: This ticker entered the screener via today's sector-rotation pass — not via social sentiment or organic mention volume. The earnings-driven catalyst score may understate the real setup. Treat the rationale below as part of the catalyst case:
+  Sector: ${sectorContext.sector ?? 'Unknown'}  |  Suggested tier: ${sectorContext.tier ?? 'core'}
+  Rationale: ${sectorContext.rationale ?? '(none)'}
+  Why now: ${sectorContext.whyNow ?? '(none)'}
+` : ''}
 COMPONENT SCORES (pre-computed, 0-100):
   Value: ${scores.value}  |  Catalyst: ${scores.catalyst}  |  Upside: ${scores.upside}  |  Risk: ${scores.risk}
   Composite: ${scores.composite}

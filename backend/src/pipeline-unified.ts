@@ -167,32 +167,54 @@ async function fetchAllSentimentData(): Promise<{
 // ── Sector research candidates (from daily-cron sector analysis) ─────────
 
 // Sector research candidates from today's daily cron output.
-// Reads-and-marks: returns unused rows AND marks them used_in_run_id in one transaction.
-async function fetchSectorResearchCandidates(runId: string): Promise<Array<{ ticker: string; source: string; sector: string; tier: string }>> {
+// Pure read — does NOT mark used. Caller must invoke markSectorCandidatesUsed
+// AFTER candidates are selected into the top-N so only actually-scored
+// candidates are burned. (Previously this marked all on read, wasting
+// candidates that never made it past selectTopCandidates.)
+async function fetchSectorResearchCandidates(): Promise<
+  Array<{ ticker: string; sector: string; tier: string; rationale: string; whyNow: string }>
+> {
   try {
-    const rows = await db.query<{ ticker: string; sector: string; suggested_tier: string }>(
-      `WITH picked AS (
-         SELECT id, ticker, sector, suggested_tier
+    const rows = await db.query<{
+      ticker: string;
+      sector: string;
+      suggested_tier: string;
+      rationale: string;
+      why_now: string;
+    }>(
+      `SELECT ticker, sector, suggested_tier, rationale, why_now
          FROM sector_candidates
-         WHERE run_date = CURRENT_DATE AND used_in_run_id IS NULL
-         FOR UPDATE SKIP LOCKED
-       )
-       UPDATE sector_candidates sc
-          SET used_in_run_id = $1
-         FROM picked p
-        WHERE sc.id = p.id
-       RETURNING p.ticker, p.sector, p.suggested_tier`,
-      [runId]
+        WHERE run_date = CURRENT_DATE AND used_in_run_id IS NULL`
     );
     return rows.map((r) => ({
       ticker: r.ticker.toUpperCase(),
-      source: 'sector-research',
       sector: r.sector,
       tier: r.suggested_tier,
+      rationale: r.rationale,
+      whyNow: r.why_now,
     }));
   } catch (e) {
     console.warn(`[pipeline-unified] sector-research fetch failed: ${(e as Error).message}`);
     return [];
+  }
+}
+
+// Mark only the sector candidates that actually made it into the run's
+// top-N selection. Called after selectTopCandidates so candidates that
+// don't make the cut remain available for the next pipeline cron.
+async function markSectorCandidatesUsed(runId: string, tickers: string[]): Promise<void> {
+  if (tickers.length === 0) return;
+  try {
+    await db.query(
+      `UPDATE sector_candidates
+          SET used_in_run_id = $1
+        WHERE run_date = CURRENT_DATE
+          AND used_in_run_id IS NULL
+          AND ticker = ANY($2::text[])`,
+      [runId, tickers]
+    );
+  } catch (e) {
+    console.warn(`[pipeline-unified] sector-research mark-used failed: ${(e as Error).message}`);
   }
 }
 
@@ -398,7 +420,7 @@ async function runUnifiedPipeline(): Promise<void> {
     const { sentiment, finvizSourcesByTicker } = await fetchAllSentimentData();
 
     console.log('  - Sector research candidates...');
-    const sectorCandidates = await fetchSectorResearchCandidates(RUN_ID);
+    const sectorCandidates = await fetchSectorResearchCandidates();
     for (const sc of sectorCandidates) {
       sentiment.push({
         ticker: sc.ticker,
@@ -406,6 +428,10 @@ async function runUnifiedPipeline(): Promise<void> {
         mentions: 1,
         sentiment: 75,
         rank: 0,
+        sector: sc.sector,
+        suggestedTier: sc.tier,
+        rationale: sc.rationale,
+        whyNow: sc.whyNow,
       });
     }
     console.log(`    ${sectorCandidates.length} entries`);
@@ -419,6 +445,16 @@ async function runUnifiedPipeline(): Promise<void> {
     // 4. Select candidates (then shuffle to avoid alphabetical bias)
     console.log('\n[3/9] Selecting top candidates...');
     const candidates = shuffle(selectTopCandidates(merged, finvizSourcesByTicker, MAX_CANDIDATES));
+
+    // Mark only sector candidates that actually made the top-N (not all read).
+    // Candidates that didn't make the cut stay available for the next cron.
+    const pickedSectorTickers = candidates
+      .filter((c) => !!c.sentiment.sources['sector-research'])
+      .map((c) => c.ticker);
+    if (pickedSectorTickers.length > 0) {
+      await markSectorCandidatesUsed(RUN_ID, pickedSectorTickers);
+      console.log(`  Marked ${pickedSectorTickers.length} sector candidates used: ${pickedSectorTickers.join(', ')}`);
+    }
     const letters: Record<string, number> = {};
     for (const c of candidates) letters[c.ticker[0]] = (letters[c.ticker[0]] || 0) + 1;
     console.log(`  Selected ${candidates.length} candidates (shuffled). By letter:`, JSON.stringify(letters));
@@ -530,14 +566,23 @@ async function runUnifiedPipeline(): Promise<void> {
         }
       }
 
+      // Sector-research candidates bypass the composite-35 LLM gate. The
+      // catalyst-score formula is earnings-driven (up to 30 pts for d2e<=5)
+      // and sector-momentum candidates can't earn those points — they need
+      // to reach Perplexity for AI judgment with the sector rationale in
+      // context. Without this bypass, sector tickers without organic
+      // sentiment get SKIP_CLASSIFICATION before the AI ever sees them.
+      const isSectorCandidate = !!t.sentiment.sources['sector-research'];
       scoredTickers.push({
         t, enrichment, tech, tradeability, scores, tier,
-        // LLM only for tradeable + composite >= 35. Speculative tier uses
-        // attention×0.7+catalyst×0.3 as its effective composite.
+        // LLM for tradeable + (composite >= 35 OR sector-research candidate).
+        // Speculative tier uses attention×0.7+catalyst×0.3 as its effective
+        // composite.
         needsLLM: tradeability.tradeable && (
-          tier === 'core'
+          isSectorCandidate ||
+          (tier === 'core'
             ? scores.composite >= 35
-            : (scores.attention * 0.7 + scores.catalyst * 0.3) >= 35
+            : (scores.attention * 0.7 + scores.catalyst * 0.3) >= 35)
         ),
       });
     }
@@ -551,9 +596,22 @@ async function runUnifiedPipeline(): Promise<void> {
       llmTickers,
       3,
       async (s) => {
+        // Pass sector cron's rationale + why_now if this ticker came from
+        // the sector pass — gives Perplexity the catalyst context the
+        // earnings-weighted catalyst score can't capture.
+        const sectorSrc = s.t.sentiment.sources['sector-research'];
+        const sectorContext = sectorSrc
+          ? {
+              sector: sectorSrc.sector,
+              tier: sectorSrc.suggestedTier,
+              rationale: sectorSrc.rationale,
+              whyNow: sectorSrc.whyNow,
+            }
+          : undefined;
         const cls = await generateUnifiedAnalysis({
           ticker: s.t.ticker, price: s.t.price, fundamentals: s.t.fundamentals,
           yahoo: s.t.yahoo, enrichment: s.enrichment, scores: s.scores,
+          sectorContext,
         });
         return { ticker: s.t.ticker, classification: cls };
       },
@@ -578,10 +636,13 @@ async function runUnifiedPipeline(): Promise<void> {
         ? s.scores.composite
         : s.scores.attention * 0.7 + s.scores.catalyst * 0.3;
 
+      // Sector candidates skip the low-composite override — same reason as
+      // the needsLLM gate above. Their LLM call already ran; keep the result.
+      const isSectorCandidateAssembly = !!s.t.sentiment.sources['sector-research'];
       let classification: UnifiedClassification;
       if (!s.tradeability.tradeable) {
         classification = { ...SKIP_CLASSIFICATION, thesis: 'skipped: not tradeable' };
-      } else if (effectiveComposite < 35) {
+      } else if (effectiveComposite < 35 && !isSectorCandidateAssembly) {
         classification = { ...SKIP_CLASSIFICATION, thesis: 'skipped: low composite' };
       } else {
         classification = llmMap.get(s.t.ticker) ?? { ...SKIP_CLASSIFICATION, thesis: 'llm_error' };

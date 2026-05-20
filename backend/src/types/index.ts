@@ -7,6 +7,13 @@ export interface SentimentData {
   momentum?: number; // ratio vs previous period
   rank?: number;
   timestamp?: Date;
+  // Populated only when source === 'sector-research' — carries the
+  // sector cron's rationale through to the LLM prompt so the AI has
+  // catalyst context the earnings-driven catalyst score can't capture.
+  sector?: string;
+  suggestedTier?: string;
+  rationale?: string;
+  whyNow?: string;
 }
 
 // Normalized sentiment per ticker (merged from all sources)
