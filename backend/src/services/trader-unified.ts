@@ -74,7 +74,13 @@ const CATALYST_FADE_DAYS = 2; // days past catalyst date before fade trigger
 // Hotfix 2026-05-13: MIN_COMPOSITE 45 → 40. See scoring.ts:classifyUnified comment.
 const MIN_COMPOSITE = 40;
 const MAX_RISK = 45;
-const MIN_CONVICTION = 6;
+// Lowered 6 → 5 on 2026-05-22 alongside the sector-pass catalyst bonus.
+// Sector-rotation candidates rarely earn conviction ≥ 6 from Perplexity even
+// with the rationale in context — the AI honestly reports "defensive
+// rotation" as a 4-5/10 setup. Dropping to 5 lets borderline sector picks
+// through when composite + risk + (BUY recommendation) all clear; the
+// catalyst-15 bonus does the heavy lifting on composite.
+const MIN_CONVICTION = 5;
 
 // Sizing
 const HIGH_CONVICTION_PCT = 14;

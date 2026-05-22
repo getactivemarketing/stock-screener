@@ -558,6 +558,18 @@ export function calculateCatalystScoreV2(input: UnifiedScoringInputs): number {
   if (headlines.length >= 3) score += 10;
   else if (headlines.length >= 1) score += 5;
 
+  // Sector-rotation bonus (+15). Sector-research candidates are picked by
+  // the daily Claude sector pass for a specific rotation/theme reason that
+  // the earnings-driven catalyst formula can't capture (no proximate
+  // earnings = 0 d2e points). The bonus substitutes catalyst-strength
+  // signal the algo can't see for itself; sized so a typical sector
+  // candidate (catalyst 35-45 pre-bonus) lands in the 50-60 range,
+  // enough to push composite over the BUY threshold when value + risk
+  // also pass.
+  if (input.sentiment.sources['sector-research']) {
+    score += 15;
+  }
+
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
