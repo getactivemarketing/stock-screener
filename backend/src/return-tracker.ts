@@ -28,17 +28,23 @@ interface ReturnData {
  * Picks must be at least 1 day old and not have return data yet
  */
 async function getPendingPicks(): Promise<PendingPick[]> {
+  // Gate on return_5d (not return_1d): a pick is revisited on each daily run
+  // until 5 forward sessions exist, so 1d→3d→5d fill in over successive days.
+  // Window is 20 days: enough for 5 trading days to settle (+buffer); older
+  // picks age out keeping whatever partial returns they reached.
+  // Classification list is the UNIFIED taxonomy ('buy'/'watch'/'avoid') plus
+  // the legacy penny-stock labels, so unified BUY/AVOID rows are tracked too.
   const result = await db.query(`
     SELECT id, ticker, run_timestamp, price
     FROM scan_results
-    WHERE return_1d IS NULL
+    WHERE return_5d IS NULL
       AND price IS NOT NULL
       AND price > 0
       AND run_timestamp < NOW() - INTERVAL '1 day'
-      AND run_timestamp > NOW() - INTERVAL '30 days'
-      AND classification IN ('runner', 'value', 'both', 'watch')
-    ORDER BY run_timestamp DESC
-    LIMIT 100
+      AND run_timestamp > NOW() - INTERVAL '20 days'
+      AND classification IN ('buy', 'watch', 'avoid', 'runner', 'value', 'both')
+    ORDER BY run_timestamp ASC
+    LIMIT 600
   `);
 
   return result;
@@ -67,12 +73,40 @@ async function calculateReturns(pick: PendingPick): Promise<ReturnData> {
 
   const entryPrice = pick.price;
 
-  // Extract arrays from candles
-  const closes = candles.map(c => c.close);
-  const highs = candles.map(c => c.high);
-  const lows = candles.map(c => c.low);
+  // Keep only sessions strictly AFTER the entry calendar day, so forward[0] is
+  // the first trading day post-entry (true 1-day forward return). Comparing on
+  // UTC calendar date avoids an off-by-one between Yahoo's intraday candle
+  // timestamps and the pick's intraday run_timestamp.
+  const entryDayUTC = Date.UTC(
+    entryDate.getUTCFullYear(),
+    entryDate.getUTCMonth(),
+    entryDate.getUTCDate(),
+  );
+  const forward = candles.filter((c) => {
+    const cDayUTC = Date.UTC(
+      c.date.getUTCFullYear(),
+      c.date.getUTCMonth(),
+      c.date.getUTCDate(),
+    );
+    return cDayUTC > entryDayUTC;
+  });
 
-  // Calculate returns (percentage)
+  if (forward.length === 0) {
+    return {
+      return_1d: null,
+      return_3d: null,
+      return_5d: null,
+      max_gain_5d: null,
+      max_drawdown_5d: null,
+    };
+  }
+
+  // Extract arrays from forward sessions
+  const closes = forward.map(c => c.close);
+  const highs = forward.map(c => c.high);
+  const lows = forward.map(c => c.low);
+
+  // Calculate returns (percentage). forward[0]=+1d, forward[2]=+3d, forward[4]=+5d
   const return_1d = closes.length >= 1
     ? ((closes[0] - entryPrice) / entryPrice) * 100
     : null;
@@ -85,7 +119,7 @@ async function calculateReturns(pick: PendingPick): Promise<ReturnData> {
     ? ((closes[4] - entryPrice) / entryPrice) * 100
     : null;
 
-  // Calculate max gain and drawdown over 5 days (or available days)
+  // Calculate max gain and drawdown over first 5 forward days (or available days)
   const daysToCheck = Math.min(5, highs.length);
   let maxHigh = entryPrice;
   let minLow = entryPrice;
@@ -262,7 +296,7 @@ async function printWinRateSummary(): Promise<void> {
         AVG(max_drawdown_5d) as avg_max_dd
       FROM scan_results
       WHERE return_1d IS NOT NULL
-        AND classification IN ('runner', 'value', 'both')
+        AND classification IN ('buy', 'watch', 'avoid', 'runner', 'value', 'both')
       GROUP BY classification
       ORDER BY classification
     `);
