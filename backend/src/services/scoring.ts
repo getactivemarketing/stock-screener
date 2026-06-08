@@ -716,13 +716,14 @@ export function classifyUnified(
   scores: ComponentScores,
   tradeable: boolean
 ): 'BUY' | 'WATCH' | 'AVOID' {
-  if (scores.composite < 35 || scores.risk > 60) return 'AVOID';
-  // Threshold lowered 45 → 40 on 2026-05-13: classifier signal collapsed
-  // around May 7-8 (high-conviction tickers down 75%), leaving composite
-  // distributions stuck 5-6 pts below 45 even when risk + conviction are fine.
-  // Restores ~3 BUYs/day at current signal levels. Reassess after sector pass
-  // + veto layer land (target: raise back to 45 once veto enforces).
-  if (scores.composite >= 40 && scores.risk <= 45 && tradeable) return 'BUY';
+  if (scores.composite < 30 || scores.risk > 60) return 'AVOID';
+  // Threshold lowered 45 → 40 on 2026-05-13, then 40 → 35 on 2026-06-08.
+  // The mega-cap universe rarely clears 40 (~0.6 buy-grade/day); realized 5d
+  // returns show the 35-39.9 band is still net-positive (37-39.9 +4.68%/70%,
+  // 35-36.9 +11.84%/71%), so dropping to 35 ~3-4x's trade frequency without
+  // degrading quality. AVOID floor also lowered 35 → 30 so a WATCH band still
+  // exists below the BUY line. Reassess if the universe is recalibrated.
+  if (scores.composite >= 35 && scores.risk <= 45 && tradeable) return 'BUY';
   return 'WATCH';
 }
 

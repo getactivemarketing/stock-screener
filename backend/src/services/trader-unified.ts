@@ -71,8 +71,10 @@ const STOP_LOSS_PCT = 12; // core position down >= 12% from entry triggers stop
 const CATALYST_FADE_DAYS = 2; // days past catalyst date before fade trigger
 
 // Entry gates (core tier)
-// Hotfix 2026-05-13: MIN_COMPOSITE 45 → 40. See scoring.ts:classifyUnified comment.
-const MIN_COMPOSITE = 40;
+// Hotfix 2026-05-13: MIN_COMPOSITE 45 → 40; then 40 → 35 on 2026-06-08 (mega-cap
+// universe rarely clears 40; 35-39.9 band still net-positive). Keep in lockstep
+// with scoring.ts:classifyUnified BUY threshold.
+const MIN_COMPOSITE = 35;
 const MAX_RISK = 45;
 // Lowered 6 → 5 on 2026-05-22 alongside the sector-pass catalyst bonus.
 // Sector-rotation candidates rarely earn conviction ≥ 6 from Perplexity even
