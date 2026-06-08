@@ -474,14 +474,16 @@ function evaluateBuy(
     };
   }
 
-  // Gate: recommendation must be BUY
-  if (classification !== 'BUY') {
-    return {
-      ...baseDecision,
-      action: 'SKIP',
-      reason: `Recommendation is ${classification}, not BUY`,
-    };
-  }
+  // LLM recommendation is ADVISORY ONLY (2026-06-03).
+  // Previously this hard-gated on `classification === 'BUY'`, which blocked 91%
+  // of all candidates: since the universe drifted to mega-caps the LLM rated
+  // essentially everything AVOID (NVDA/MSFT/GOOG/AVGO...), and no trade fired
+  // after Apr 28. Realized 5d returns showed the score model was the accurate
+  // signal — score='buy' returned +8.92%/79% win (and +11.44%/83% at
+  // conviction>=5) over the same window. So we now trade on the quantitative
+  // classification (tradeable + composite>=MIN_COMPOSITE + risk<=MAX_RISK below,
+  // == classifyUnified 'buy') with the LLM's conviction score as the floor. The
+  // LLM label is kept on the decision for visibility but no longer blocks.
 
   // Gate: composite
   if (result.scores.composite < MIN_COMPOSITE) {
