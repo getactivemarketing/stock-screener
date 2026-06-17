@@ -4,6 +4,7 @@
 
 <nav class="research-nav">
   <a href="/research/company">Company Analysis</a>
+  <a href="/research/entry">Entry Analysis</a>
 </nav>
 {@render children()}
 
