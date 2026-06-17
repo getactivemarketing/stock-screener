@@ -4,7 +4,7 @@ import { cagr, computeMetrics } from './metrics';
 import { askPerplexityJSON, JSON_SYSTEM_PROMPT } from './perplexity';
 import type {
   Section, FinancialsPayload, FinancialsRow, MetricsPayload,
-  CompsPayload, OppsRisksPayload, GradePayload, AnnualStatement, CompanyOverview,
+  CompsPayload, OppsRisksPayload, GradePayload, AnnualStatement, CompanyOverview, SectionPayload,
 } from './types';
 
 const FINANCIAL_ROWS: { key: keyof AnnualStatement; label: string }[] = [
@@ -20,13 +20,13 @@ function todayUTC(): string {
 }
 
 /** Read a cached section payload for today, or null. */
-export async function getCached(ticker: string, section: Section): Promise<unknown | null> {
-  const rows = await query<{ payload: unknown }>(
+export async function getCached(ticker: string, section: Section): Promise<SectionPayload | null> {
+  const rows = await query<{ payload: SectionPayload }>(
     `SELECT payload FROM company_analysis
      WHERE ticker = $1 AND section = $2 AND analysis_date = $3`,
     [ticker, section, todayUTC()]
   );
-  return rows[0]?.payload ?? null;
+  return (rows[0]?.payload as SectionPayload) ?? null;
 }
 
 /** Upsert today's section payload. */
@@ -36,7 +36,7 @@ export async function putCached(ticker: string, section: Section, payload: unkno
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (ticker, section, analysis_date)
      DO UPDATE SET payload = EXCLUDED.payload, created_at = now()`,
-    [ticker, section, todayUTC(), JSON.stringify(payload)]
+    [ticker, section, todayUTC(), payload]
   );
 }
 
@@ -81,6 +81,10 @@ export async function buildMetrics(ticker: string, avKey: string, pplxKey: strin
   ]);
   const latest = statements[statements.length - 1];
   const rows = latest ? computeMetrics(latest, overview) : [];
+
+  if (rows.length === 0) {
+    return { rows };
+  }
 
   // Perplexity: industry average + leader benchmarks for each metric label
   const labels = rows.map((r) => r.label);
