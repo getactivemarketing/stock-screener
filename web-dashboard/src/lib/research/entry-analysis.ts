@@ -62,7 +62,7 @@ export async function stagePlan(planId: number, key: string, secret: string): Pr
 
   const out: EntryOrderRow[] = [];
   for (const t of plan.plan.tranches) {
-    const clientOrderId = `s2-${plan.ticker}-${t.trancheN}`;
+    const clientOrderId = `s2-${planId}-${plan.ticker}-${t.trancheN}`;
     const r = await placeGtcLimitBuy(key, secret, plan.ticker, t.shares, t.limitPrice, clientOrderId);
     await query(
       `INSERT INTO entry_orders (entry_plan_id, tranche_n, client_order_id, alpaca_order_id, shares, limit_price, status)
@@ -102,14 +102,17 @@ export async function reconcilePlan(planId: number, key: string, secret: string)
 
 /** Cancel all still-open orders for a plan; mark plan cancelled. */
 export async function cancelRemaining(planId: number, key: string, secret: string): Promise<number> {
-  const rows = await query<{ alpaca_order_id: string | null; status: string }>(
-    `SELECT alpaca_order_id, status FROM entry_orders WHERE entry_plan_id = $1`,
+  const rows = await query<{ alpaca_order_id: string | null; client_order_id: string; status: string }>(
+    `SELECT alpaca_order_id, client_order_id, status FROM entry_orders WHERE entry_plan_id = $1`,
     [planId]
   );
   let cancelled = 0;
   for (const r of rows) {
     if (r.alpaca_order_id && !['filled', 'canceled', 'cancelled', 'expired', 'rejected'].includes(r.status)) {
-      if (await cancelOrder(key, secret, r.alpaca_order_id)) cancelled++;
+      if (await cancelOrder(key, secret, r.alpaca_order_id)) {
+        cancelled++;
+        await query(`UPDATE entry_orders SET status = 'cancelled' WHERE client_order_id = $1`, [r.client_order_id]);
+      }
     }
   }
   await query(`UPDATE entry_plans SET status = 'cancelled' WHERE id = $1`, [planId]);
