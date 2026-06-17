@@ -19,10 +19,9 @@ async function avGet(fn: string, ticker: string, apiKey: string): Promise<any> {
  * Returns [] if Alpha Vantage returns no annual reports (rate limit / unknown ticker).
  */
 export async function fetchStatements(ticker: string, apiKey: string): Promise<AnnualStatement[]> {
-  const [income, balance, cash] = await Promise.all([
+  const [income, balance] = await Promise.all([
     avGet('INCOME_STATEMENT', ticker, apiKey),
     avGet('BALANCE_SHEET', ticker, apiKey),
-    avGet('CASH_FLOW', ticker, apiKey),
   ]);
 
   const incomeReports: any[] = income?.annualReports ?? [];
@@ -30,8 +29,6 @@ export async function fetchStatements(ticker: string, apiKey: string): Promise<A
 
   const balByYear = new Map<string, any>();
   for (const r of balance?.annualReports ?? []) balByYear.set(r.fiscalDateEnding?.slice(0, 4), r);
-  // cash flow currently unused for the listed line items but fetched for future use
-  void cash;
 
   const rows: AnnualStatement[] = incomeReports.slice(0, 5).map((r) => {
     const fy = r.fiscalDateEnding?.slice(0, 4) ?? '';
