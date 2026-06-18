@@ -42,24 +42,41 @@ export async function putCached(ticker: string, section: Section, payload: unkno
 
 // ---- Section builders ----
 
+/**
+ * Snap an LLM-provided figure to the order of magnitude of a known actual.
+ * Perplexity often returns revenue in billions/millions (e.g. 281.7) while
+ * statement values are raw dollars (281700000000). Multiply by 1000 until the
+ * figure is within ~100x of the reference, so units line up regardless.
+ */
+function normalizeMagnitude(value: number | null, reference: number | null): number | null {
+  if (value === null || value === 0 || reference === null || reference <= 0) return value;
+  let v = value;
+  while (v > 0 && reference / v >= 100) v *= 1000;
+  return v;
+}
+
 export async function buildFinancials(ticker: string, avKey: string, pplxKey: string): Promise<FinancialsPayload> {
   const statements = await fetchStatements(ticker, avKey);
   const years = statements.map((s) => s.fiscalYear);
+  const latestYear = years[years.length - 1];
+  const latestRevenue = statements.length ? statements[statements.length - 1].revenue : null;
 
   // Perplexity: forward estimate + per-row driver commentary + believability note
   const pplx = (await askPerplexityJSON(
     pplxKey,
     JSON_SYSTEM_PROMPT,
-    `For ${ticker}, using the latest fiscal years ${years.join(', ')}, return JSON:
-{"forwardYear":"<year>","forwardRevenue":<num|null>,"drivers":{"Revenue":"<one line>","Gross Profit":"...","EBITDA":"...","Operating Income":"...","Net Income":"..."},"managementBelievabilityNote":"<2-3 sentences grading how well aggressive targets are supported by historical trend and market size>"}`
+    `For ${ticker}, the latest actual fiscal year is ${latestYear ?? 'unknown'} (revenue ${latestRevenue ?? 'unknown'} in raw dollars). Return JSON:
+{"forwardYear":"<the NEXT fiscal year after ${latestYear ?? 'the latest'}>","forwardRevenue":<consensus/guidance next-FY revenue as a RAW DOLLAR figure, the full number not in millions or billions, or null>,"drivers":{"Revenue":"<one line>","Gross Profit":"...","EBITDA":"...","Operating Income":"...","Net Income":"..."},"managementBelievabilityNote":"<2-3 sentences grading how well aggressive targets are supported by historical trend and market size>"}`
   )) as any;
+
+  const forwardRevenue = normalizeMagnitude(pplx?.forwardRevenue ?? null, latestRevenue);
 
   const rows: FinancialsRow[] = FINANCIAL_ROWS.map(({ key, label }) => {
     const values = statements.map((s) => s[key] as number | null);
     return {
       label,
       values,
-      forwardEstimate: label === 'Revenue' ? (pplx?.forwardRevenue ?? null) : null,
+      forwardEstimate: label === 'Revenue' ? forwardRevenue : null,
       cagr: cagr(values),
       driverCommentary: pplx?.drivers?.[label] ?? '',
     };
