@@ -15,6 +15,7 @@
         <a href="/analytics">Analytics</a>
         <a href="/portfolio">Portfolio</a>
         <a href="/performance">Performance</a>
+        <a href="/research/company">Research</a>
       </nav>
     </div>
   </div>
