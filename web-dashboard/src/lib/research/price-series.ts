@@ -33,11 +33,14 @@ export function recentSwingLow(lows: number[], n: number): number | null {
 interface DailyBar { close: number; low: number; high: number; volume: number }
 
 /**
- * Fetch up to ~1 year of daily bars from Alpha Vantage (newest-first) and compute indicators.
- * Returns null if AV returns no series (rate-limited / unknown ticker).
+ * Fetch daily bars from Alpha Vantage (newest-first) and compute indicators.
+ * Uses outputsize=compact (~100 trading days) — outputsize=full is an AV premium
+ * feature on TIME_SERIES_DAILY. The 8/20/50-day MAs, volatility, and recent swing
+ * low are exact; the "52-week" fields approximate over the available ~100 bars.
+ * Returns null if AV returns no series (premium note / rate-limited / unknown ticker).
  */
 export async function fetchIndicators(ticker: string, apiKey: string): Promise<Indicators | null> {
-  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=full&apikey=${apiKey}`;
+  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${apiKey}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`AlphaVantage TIME_SERIES_DAILY HTTP ${res.status}`);
   const data: unknown = await res.json();
