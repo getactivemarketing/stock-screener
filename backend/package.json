@@ -12,7 +12,8 @@
     "pipeline-legacy": "tsx src/pipeline.ts",
     "sector-research": "tsx src/sector-research.ts",
     "db:migrate": "tsx src/db/migrate.ts",
-    "returns": "tsx src/return-tracker.ts"
+    "returns": "tsx src/return-tracker.ts",
+    "test": "vitest run"
   },
   "keywords": [
     "stock",
@@ -37,6 +38,7 @@
     "@types/pg": "^8.11.10",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.6"
   }
 }
