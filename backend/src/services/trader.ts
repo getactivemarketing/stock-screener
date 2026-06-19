@@ -67,6 +67,7 @@ export async function loadTradingConfig(): Promise<TradingConfig> {
     sectorResearchEnabled: (row.sector_research_enabled as boolean) ?? true,
     vetoLayerEnabled: (row.veto_layer_enabled as boolean) ?? false,
     vetoLayerEnforce: (row.veto_layer_enforce as boolean) ?? false,
+    noSameDaySell: (row.no_same_day_sell as boolean) ?? true,
   };
 }
 

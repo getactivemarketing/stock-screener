@@ -263,6 +263,7 @@ export interface TradingConfig {
   sectorResearchEnabled: boolean;
   vetoLayerEnabled: boolean;
   vetoLayerEnforce: boolean;
+  noSameDaySell: boolean;
 }
 
 // Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is
