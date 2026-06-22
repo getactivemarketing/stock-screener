@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.js';
 import * as alpaca from './alpaca.js';
 import { validateBuy } from './risk.js';
+import { isSameTradingDay } from './trade-restrictions.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -101,7 +102,8 @@ type ExitReason =
   | 'catalyst_fade'
   | 'max_hold'
   | 'reclass_avoid'
-  | 'scan_miss';
+  | 'scan_miss'
+  | 'min_hold';
 
 // Extended decision with unified-specific attribution fields (stored via cast
 // on the legacy TradeDecision shape so Phase G can consume uniformly).
@@ -325,6 +327,27 @@ async function evaluateSell(
   const extras: UnifiedDecisionExtras = {
     exitComponentScores: result ? result.scores : null,
   };
+
+  // 0. Same-day sell guard: if flag is on and position was opened today (ET),
+  //    suppress ALL exits and return HOLD so the position is never sold on its
+  //    entry date. Guard sits before stop-loss so it supersedes every exit.
+  if (config.noSameDaySell && state?.entry_date && isSameTradingDay(state.entry_date, new Date())) {
+    const wouldBeReason =
+      position.unrealizedPlPct <= -stopLossPct ? 'stop_loss' : 'exit';
+    extras.exitReason = 'min_hold';
+    return Object.assign(
+      {
+        ticker,
+        action: 'HOLD' as const,
+        reason: `Exit (${wouldBeReason}) suppressed: same-day sell blocked (no_same_day_sell).`,
+        classification,
+        scores,
+        tradeRationale,
+        tier: posTier,
+      },
+      extras
+    );
+  }
 
   // 1. Stop-loss: down >= stopLossPct from entry (tier-specific)
   if (position.unrealizedPlPct <= -stopLossPct) {

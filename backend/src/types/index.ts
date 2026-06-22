@@ -263,6 +263,7 @@ export interface TradingConfig {
   sectorResearchEnabled: boolean;
   vetoLayerEnabled: boolean;
   vetoLayerEnforce: boolean;
+  noSameDaySell: boolean;
 }
 
 // Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is
@@ -450,7 +451,7 @@ export interface ExitAttribution {
   upsideScore: number;
   riskScore: number;
   composite: number;
-  reason: 'stop_loss' | 'catalyst_fade' | 'max_hold' | 'reclass_avoid' | 'scan_miss' | 'manual';
+  reason: 'stop_loss' | 'catalyst_fade' | 'max_hold' | 'reclass_avoid' | 'scan_miss' | 'min_hold' | 'manual';
 }
 
 // ── Sector Pass Types (2026-05-11) ─────────────────────
