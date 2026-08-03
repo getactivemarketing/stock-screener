@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.js';
 import * as alpaca from './alpaca.js';
 import { validateBuy } from './risk.js';
+import { resolveEntryState } from './trade-restrictions.js';
 import type {
   TradingConfig,
   TradeDecision,
@@ -554,12 +555,17 @@ export async function updatePortfolioState(
     const prevRows = await db.query<{
       consecutive_scan_misses: number;
       entry_date: string | null;
+      quantity: number | null;
       days_held: number;
       classification_at_entry: string | null;
       stop_loss: number | null;
       target_price: number | null;
     }>(
-      `SELECT consecutive_scan_misses, entry_date, days_held, classification_at_entry, stop_loss, target_price
+      // entry_date is an ET calendar date; read as text so the driver does not
+      // reinterpret it in another timezone.
+      `SELECT consecutive_scan_misses,
+              to_char(entry_date, 'YYYY-MM-DD') AS entry_date,
+              quantity, days_held, classification_at_entry, stop_loss, target_price
        FROM portfolio_state
        WHERE ticker = $1
        ORDER BY created_at DESC
@@ -571,17 +577,12 @@ export async function updatePortfolioState(
     const inCurrentScan = resultTickers.has(pos.ticker);
     const scanMisses = inCurrentScan ? 0 : (prev?.consecutive_scan_misses ?? 0) + 1;
 
-    // Calculate days held
-    let entryDate: string;
-    let daysHeld: number;
-    if (prev?.entry_date) {
-      entryDate = prev.entry_date;
-      const diffMs = Date.now() - new Date(entryDate).getTime();
-      daysHeld = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    } else {
-      entryDate = new Date().toISOString().split('T')[0];
-      daysHeld = 0;
-    }
+    // Days held, resetting the clock when a flat position is re-entered.
+    const { entryDate, daysHeld } = resolveEntryState({
+      prevEntryDate: prev?.entry_date ?? null,
+      prevQuantity: prev?.quantity ?? null,
+      now: new Date(),
+    });
 
     // Use current analysis targets if available, else carry forward
     const analysis = resultMap.get(pos.ticker);

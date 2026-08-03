@@ -12,7 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.js';
 import * as alpaca from './alpaca.js';
 import { validateBuy } from './risk.js';
-import { isSameTradingDay } from './trade-restrictions.js';
+import { isSameTradingDay, resolveEntryState } from './trade-restrictions.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -302,7 +302,11 @@ async function evaluateSell(
     entry_category: EntryCategory | null;
     entry_catalyst_date: string | null;
   }>(
-    `SELECT days_held, consecutive_scan_misses, entry_date,
+    // entry_date is an ET calendar date. Read it as text so the pg driver never
+    // turns it into a Date (which would land on midnight UTC = the prior ET day
+    // and silently defeat the same-day-sell gate below).
+    `SELECT days_held, consecutive_scan_misses,
+            to_char(entry_date, 'YYYY-MM-DD') AS entry_date,
             entry_category, entry_catalyst_date
      FROM portfolio_state
      WHERE ticker = $1
@@ -1017,6 +1021,68 @@ export async function logDecisions(
 
 // ── Update Portfolio State ──────────────────────────────────────
 
+/**
+ * Write a quantity=0 row for any ticker we last saw held but that is no longer
+ * an open Alpaca position.
+ *
+ * Without this the state table only ever records positions that exist right
+ * now, so a full exit leaves no trace: the ticker's newest row still shows the
+ * old quantity and entry_date, and a later re-entry silently inherits them.
+ * The zero row is what makes "this is a new holding period" detectable, and it
+ * also stops closed positions lingering in portfolio_state analytics.
+ */
+async function recordClosedPositions(
+  runId: string,
+  positions: AlpacaPosition[]
+): Promise<void> {
+  const openTickers = new Set(positions.map((p) => p.ticker));
+
+  // Only tickers whose newest row still claims a holding. Tickers already
+  // marked closed must be excluded or every run would re-write a redundant
+  // zero row for the entire history of the table.
+  const heldRows = await db.query<{ ticker: string }>(
+    `SELECT ticker FROM (
+       SELECT DISTINCT ON (ticker) ticker, quantity
+       FROM portfolio_state
+       ORDER BY ticker, created_at DESC
+     ) latest
+     WHERE quantity > 0`
+  );
+
+  const closed = heldRows
+    .map((r) => r.ticker)
+    .filter((ticker) => !openTickers.has(ticker));
+
+  for (const ticker of closed) {
+    // Carry entry_date forward on the closing row purely as a record of the
+    // period that just ended; quantity=0 is what marks it closed.
+    await db.query(
+      `INSERT INTO portfolio_state (
+         id, run_id, ticker, quantity, avg_entry_price, current_price,
+         unrealized_pl_pct, entry_date, days_held, classification_at_entry,
+         stop_loss, target_price, consecutive_scan_misses,
+         entry_category, entry_catalyst_date, tier, created_at
+       )
+       SELECT $1, $2, ticker, 0, avg_entry_price, current_price,
+              unrealized_pl_pct, entry_date, days_held, classification_at_entry,
+              stop_loss, target_price, consecutive_scan_misses,
+              entry_category, entry_catalyst_date, tier, NOW()
+       FROM portfolio_state
+       WHERE ticker = $3
+       ORDER BY created_at DESC
+       LIMIT 1
+       ON CONFLICT (run_id, ticker) DO UPDATE SET quantity = 0`,
+      [uuidv4(), runId, ticker]
+    );
+  }
+
+  if (closed.length > 0) {
+    console.log(
+      `[Trader] Marked ${closed.length} closed position(s) in portfolio state: ${closed.join(', ')}`
+    );
+  }
+}
+
 export async function updatePortfolioState(
   runId: string,
   results: UnifiedPipelineResult[]
@@ -1026,10 +1092,13 @@ export async function updatePortfolioState(
   const resultMap = new Map<string, UnifiedPipelineResult>();
   for (const r of results) resultMap.set(r.ticker, r);
 
+  await recordClosedPositions(runId, positions);
+
   for (const pos of positions) {
     const prevRows = await db.query<{
       consecutive_scan_misses: number;
       entry_date: string | null;
+      quantity: number | null;
       days_held: number;
       classification_at_entry: string | null;
       stop_loss: number | null;
@@ -1038,7 +1107,10 @@ export async function updatePortfolioState(
       entry_catalyst_date: string | null;
       tier: string | null;
     }>(
-      `SELECT consecutive_scan_misses, entry_date, days_held,
+      // entry_date read as text: see the note in evaluateSell.
+      `SELECT consecutive_scan_misses,
+              to_char(entry_date, 'YYYY-MM-DD') AS entry_date,
+              quantity, days_held,
               classification_at_entry, stop_loss, target_price,
               entry_category, entry_catalyst_date, tier
        FROM portfolio_state
@@ -1053,32 +1125,36 @@ export async function updatePortfolioState(
       ? 0
       : (prev?.consecutive_scan_misses ?? 0) + 1;
 
-    let entryDate: string;
-    let daysHeld: number;
-    if (prev?.entry_date) {
-      entryDate = prev.entry_date;
-      const diffMs = Date.now() - new Date(entryDate).getTime();
-      daysHeld = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    } else {
-      entryDate = new Date().toISOString().split('T')[0];
-      daysHeld = 0;
-    }
+    // A position that was flat last cycle is a new holding period, not a
+    // continuation — otherwise a re-entry inherits its original entry_date and
+    // clears both the same-day-sell gate and max-hold.
+    const { entryDate, daysHeld } = resolveEntryState({
+      prevEntryDate: prev?.entry_date ?? null,
+      prevQuantity: prev?.quantity ?? null,
+      now: new Date(),
+    });
+    const isReentry = prev !== null && (prev.quantity ?? 0) <= 0;
 
     const result = resultMap.get(pos.ticker);
-    const stopLoss = prev?.stop_loss ?? null;
-    const targetPrice = prev?.target_price ?? null;
+    // On a re-entry every carried-over field describes the PREVIOUS holding
+    // period, so drop them all and re-derive from the current scan. Keeping a
+    // June stop-loss on a position re-opened in July prices the exit off a
+    // basis that no longer exists.
+    const carried = isReentry ? null : prev;
+    const stopLoss = carried?.stop_loss ?? null;
+    const targetPrice = carried?.target_price ?? null;
     const classificationAtEntry =
-      prev?.classification_at_entry ??
+      carried?.classification_at_entry ??
       result?.classification.recommendation ??
       null;
-    const entryCategory = prev?.entry_category ?? result?.category ?? null;
+    const entryCategory = carried?.entry_category ?? result?.category ?? null;
     const entryCatalystDate =
-      prev?.entry_catalyst_date ?? result?.catalystDate ?? null;
+      carried?.entry_catalyst_date ?? result?.catalystDate ?? null;
     // Tier persists from the prior state if known; otherwise use the current
     // scan's tier (in case this is the first row after a fill). Default core.
     const tier: ScanTier =
-      prev?.tier === 'speculative' ? 'speculative'
-      : prev?.tier === 'core' ? 'core'
+      carried?.tier === 'speculative' ? 'speculative'
+      : carried?.tier === 'core' ? 'core'
       : (result?.tier ?? 'core');
 
     await db.query(
