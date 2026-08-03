@@ -1,3 +1,5 @@
+import { query } from '$lib/db';
+import { isThrottleEnvelope } from './av-throttle';
 import type { AnnualStatement, CompanyOverview } from './types';
 
 const BASE = 'https://www.alphavantage.co/query';
@@ -8,10 +10,52 @@ function num(v: string | undefined): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+/**
+ * Fetch an Alpha Vantage function, reusing today's cached response if present.
+ *
+ * The five Company Analysis sections need overlapping upstream data — a full
+ * analysis asks for INCOME_STATEMENT and BALANCE_SHEET twice and OVERVIEW twice
+ * — which burns roughly double the requests against a ~25/day free-tier cap.
+ * Caching per (ticker, function, day) collapses those to one call each.
+ *
+ * Throttle envelopes are never cached, so a quota-exhausted response does not
+ * poison the rest of the day.
+ */
 async function avGet(fn: string, ticker: string, apiKey: string): Promise<any> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  try {
+    const hit = await query<{ payload: any }>(
+      `SELECT payload FROM av_cache WHERE ticker = $1 AND fn = $2 AND fetch_date = $3`,
+      [ticker, fn, today]
+    );
+    if (hit[0]) return hit[0].payload;
+  } catch (err) {
+    // A cache miss must never block a live fetch (e.g. migration not yet applied).
+    console.warn(`[av_cache] read failed for ${ticker}/${fn}:`, err);
+  }
+
   const res = await fetch(`${BASE}?function=${fn}&symbol=${ticker}&apikey=${apiKey}`);
   if (!res.ok) throw new Error(`AlphaVantage ${fn} HTTP ${res.status}`);
-  return res.json();
+  const payload = await res.json();
+
+  if (!isThrottleEnvelope(payload)) {
+    try {
+      await query(
+        `INSERT INTO av_cache (ticker, fn, fetch_date, payload)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (ticker, fn, fetch_date)
+         DO UPDATE SET payload = EXCLUDED.payload, created_at = now()`,
+        [ticker, fn, today, payload]
+      );
+    } catch (err) {
+      console.warn(`[av_cache] write failed for ${ticker}/${fn}:`, err);
+    }
+  } else {
+    console.warn(`[av_cache] ${ticker}/${fn} returned a throttle notice; not cached`);
+  }
+
+  return payload;
 }
 
 /**

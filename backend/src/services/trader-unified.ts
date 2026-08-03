@@ -13,6 +13,7 @@ import db from '../db/index.js';
 import * as alpaca from './alpaca.js';
 import { validateBuy } from './risk.js';
 import { isSameTradingDay, resolveEntryState } from './trade-restrictions.js';
+import { fetchResearchOwnedTickers } from './research-positions.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -149,8 +150,23 @@ export async function evaluate(
   // position limits (e.g., speculative cap counted separately from core).
   const posTiers = await fetchPositionTiers(positions.map((p) => p.ticker));
 
+  // Positions opened by Screen 2 research entries live in this same Alpaca
+  // account. The bot must never exit them — see fetchResearchOwnedTickers.
+  const researchOwned = await fetchResearchOwnedTickers();
+
   // SELL / HOLD evaluation for existing positions
   for (const pos of positions) {
+    if (researchOwned.has(pos.ticker.toUpperCase())) {
+      decisions.push({
+        ticker: pos.ticker,
+        action: 'HOLD',
+        reason: 'Research-owned position (Screen 2 entry plan): auto-trader exits suppressed.',
+        classification: resultMap.get(pos.ticker)?.classification.recommendation ?? 'unknown',
+        scores: { attention: 0, momentum: 0, fundamentals: 0, risk: 0 },
+        tier: posTiers.get(pos.ticker) ?? 'core',
+      } as TradeDecision);
+      continue;
+    }
     const result = resultMap.get(pos.ticker) ?? null;
     const posTier = posTiers.get(pos.ticker) ?? 'core';
     const sellDecision = await evaluateSell(pos, result, config, posTier);
