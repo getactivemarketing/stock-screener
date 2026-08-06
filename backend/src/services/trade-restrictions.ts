@@ -91,3 +91,43 @@ export function resolveEntryState({ prevEntryDate, prevQuantity, now }: EntrySta
   const entryDate = toEtDate(prevEntryDate) ?? today;
   return { entryDate, daysHeld: calendarDaysBetween(entryDate, today) };
 }
+
+export interface EffectiveEntryInput {
+  /** entry_date on the newest portfolio_state row ('YYYY-MM-DD' ET), or null if none. */
+  stateEntryDate: string | null;
+  /** quantity on that same row. <= 0 means it is a close-out row, not a live holding. */
+  stateQuantity: number | null;
+  /** ET date of the most recent filled BUY for this ticker, or null if unknown. */
+  lastBuyEtDate: string | null;
+  /** Today's ET calendar date. */
+  todayEt: string;
+}
+
+/**
+ * The ET date the CURRENT holding period began, for a position we hold right now.
+ *
+ * Sell decisions run before portfolio_state is refreshed inside a cycle, so just
+ * after a re-entry the newest row is still the quantity=0 close-out written when
+ * the position went flat — carrying the PREVIOUS holding period's entry_date.
+ * Trusting that row is what let ONDS be bought at 18:39 and sold at 19:08 on
+ * 2026-08-05 against an entry_date of 2026-07-06. Later sells the same day were
+ * blocked correctly, because by then the real row existed; that is why the leak
+ * decayed rather than vanished, and why it read as "mostly fixed".
+ *
+ * A close-out row is therefore ignored in favour of the actual re-entry buy. If
+ * even that is unknown, fall back to today so the gate blocks: for a position we
+ * demonstrably hold, an unknown entry is far more likely to be a fresh one the
+ * state has not caught up with than an old one.
+ */
+export function resolveEffectiveEntryDate({
+  stateEntryDate,
+  stateQuantity,
+  lastBuyEtDate,
+  todayEt,
+}: EffectiveEntryInput): string {
+  const stateRowIsLive = stateQuantity !== null && stateQuantity > 0;
+  if (stateRowIsLive && stateEntryDate) {
+    return toEtDate(stateEntryDate) ?? todayEt;
+  }
+  return (lastBuyEtDate && toEtDate(lastBuyEtDate)) || todayEt;
+}

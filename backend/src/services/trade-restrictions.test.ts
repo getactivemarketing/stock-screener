@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSameTradingDay, resolveEntryState } from './trade-restrictions';
+import { isSameTradingDay, resolveEntryState, resolveEffectiveEntryDate } from './trade-restrictions';
 
 describe('isSameTradingDay', () => {
   it('true for two times a few hours apart on the same ET date', () => {
@@ -97,5 +97,77 @@ describe('resolveEntryState', () => {
   it('is same-day immediately after a fresh entry, so the gate blocks the exit', () => {
     const { entryDate } = resolveEntryState({ prevEntryDate: '2026-06-15', prevQuantity: 0, now });
     expect(isSameTradingDay(entryDate, now)).toBe(true);
+  });
+});
+
+/**
+ * Regression tests for the stale close-out read.
+ *
+ * Sell decisions are made BEFORE portfolio_state is refreshed within a cycle.
+ * So immediately after a position is re-entered, the newest portfolio_state row
+ * is still the quantity=0 close-out written when the position went flat — and
+ * it carries the OLD holding period's entry_date. Reading entry_date off that
+ * row without checking quantity told the gate the position was opened weeks
+ * ago, and it allowed the sell.
+ *
+ * Observed live on 2026-08-05: ONDS bought 18:39, sold 19:08 against a close-out
+ * row carrying entry_date 2026-07-06. Every later sell that day was correctly
+ * suppressed, because by then the real row existed — which is exactly why the
+ * leak decayed instead of disappearing.
+ */
+describe('resolveEffectiveEntryDate', () => {
+  const todayEt = '2026-08-05';
+
+  it('uses the state row while the position is genuinely held', () => {
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 1325, lastBuyEtDate: null, todayEt,
+    })).toBe('2026-07-06');
+  });
+
+  it('IGNORES a close-out row and uses the re-entry buy date', () => {
+    // The ONDS case: newest row is quantity=0 carrying the old entry_date.
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 0, lastBuyEtDate: '2026-08-05', todayEt,
+    })).toBe('2026-08-05');
+  });
+
+  it('falls back to today when a close-out row has no known buy date', () => {
+    // Conservative: unknown entry on a position we hold means block the sell.
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 0, lastBuyEtDate: null, todayEt,
+    })).toBe(todayEt);
+  });
+
+  it('uses the buy date when there is no state row at all', () => {
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null, lastBuyEtDate: '2026-08-04', todayEt,
+    })).toBe('2026-08-04');
+  });
+
+  it('defaults to today when nothing is known', () => {
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null, lastBuyEtDate: null, todayEt,
+    })).toBe(todayEt);
+  });
+
+  it('treats a negative quantity as closed out', () => {
+    // portfolio_state has carried negative quantities before (ONDS showed -1336).
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: -1336, lastBuyEtDate: '2026-08-05', todayEt,
+    })).toBe('2026-08-05');
+  });
+
+  it('end to end: a re-entered position is same-day and the gate blocks it', () => {
+    const entry = resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 0, lastBuyEtDate: '2026-08-05', todayEt,
+    });
+    expect(isSameTradingDay(entry, new Date('2026-08-05T23:08:24Z'))).toBe(true);
+  });
+
+  it('end to end: a genuinely old position stays sellable', () => {
+    const entry = resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 1325, lastBuyEtDate: null, todayEt,
+    });
+    expect(isSameTradingDay(entry, new Date('2026-08-05T23:08:24Z'))).toBe(false);
   });
 });
