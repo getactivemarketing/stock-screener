@@ -12,7 +12,12 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/index.js';
 import * as alpaca from './alpaca.js';
 import { validateBuy } from './risk.js';
-import { isSameTradingDay, resolveEntryState } from './trade-restrictions.js';
+import {
+  isSameTradingDay,
+  resolveEntryState,
+  resolveEffectiveEntryDate,
+  etDateString,
+} from './trade-restrictions.js';
 import { fetchResearchOwnedTickers } from './research-positions.js';
 import {
   loadTradingConfig as _loadTradingConfig,
@@ -315,15 +320,17 @@ async function evaluateSell(
     days_held: number;
     consecutive_scan_misses: number;
     entry_date: string | null;
+    quantity: number | null;
     entry_category: EntryCategory | null;
     entry_catalyst_date: string | null;
   }>(
     // entry_date is an ET calendar date. Read it as text so the pg driver never
     // turns it into a Date (which would land on midnight UTC = the prior ET day
-    // and silently defeat the same-day-sell gate below).
+    // and silently defeat the same-day-sell gate below). quantity comes along so
+    // a close-out row can be told apart from a live holding.
     `SELECT days_held, consecutive_scan_misses,
             to_char(entry_date, 'YYYY-MM-DD') AS entry_date,
-            entry_category, entry_catalyst_date
+            quantity, entry_category, entry_catalyst_date
      FROM portfolio_state
      WHERE ticker = $1
      ORDER BY created_at DESC
@@ -331,6 +338,17 @@ async function evaluateSell(
     [ticker]
   );
   const state = stateRows[0] ?? null;
+
+  // Most recent filled BUY, used when the state row is a stale close-out.
+  const buyRows = await db.query<{ buy_et_date: string | null }>(
+    `SELECT to_char(COALESCE(filled_at, created_at) AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS buy_et_date
+     FROM trades
+     WHERE ticker = $1 AND action = 'BUY' AND status = 'filled'
+     ORDER BY COALESCE(filled_at, created_at) DESC
+     LIMIT 1`,
+    [ticker]
+  );
+  const lastBuyEtDate = buyRows[0]?.buy_et_date ?? null;
 
   const daysHeld = state?.days_held ?? 0;
   const scanMisses = state?.consecutive_scan_misses ?? 0;
@@ -351,7 +369,15 @@ async function evaluateSell(
   // 0. Same-day sell guard: if flag is on and position was opened today (ET),
   //    suppress ALL exits and return HOLD so the position is never sold on its
   //    entry date. Guard sits before stop-loss so it supersedes every exit.
-  if (config.noSameDaySell && state?.entry_date && isSameTradingDay(state.entry_date, new Date())) {
+  const now = new Date();
+  const effectiveEntryDate = resolveEffectiveEntryDate({
+    stateEntryDate: state?.entry_date ?? null,
+    stateQuantity: state?.quantity ?? null,
+    lastBuyEtDate,
+    todayEt: etDateString(now),
+  });
+
+  if (config.noSameDaySell && isSameTradingDay(effectiveEntryDate, now)) {
     const wouldBeReason =
       position.unrealizedPlPct <= -stopLossPct ? 'stop_loss' : 'exit';
     extras.exitReason = 'min_hold';
