@@ -97,10 +97,22 @@ export interface EffectiveEntryInput {
   stateEntryDate: string | null;
   /** quantity on that same row. <= 0 means it is a close-out row, not a live holding. */
   stateQuantity: number | null;
-  /** ET date of the most recent filled BUY for this ticker, or null if unknown. */
+  /** ET date the most recent filled BUY FILLED, or null if unknown. */
   lastBuyEtDate: string | null;
   /** Today's ET calendar date. */
   todayEt: string;
+  /**
+   * ET date the most recent filled BUY was PLACED, which can precede the fill
+   * date: the bot works GTC limit orders that routinely fill at the next
+   * session's open. Only consulted when exemptCarriedOverFills is on.
+   */
+  lastBuyPlacedEtDate?: string | null;
+  /**
+   * Opt-in. When true, a position whose latest buy order was COMMITTED in an
+   * earlier session is not treated as having been entered today, even though it
+   * filled today. Off by default, which keeps the strict fill-based rule.
+   */
+  exemptCarriedOverFills?: boolean;
 }
 
 /**
@@ -124,10 +136,25 @@ export function resolveEffectiveEntryDate({
   stateQuantity,
   lastBuyEtDate,
   todayEt,
+  lastBuyPlacedEtDate = null,
+  exemptCarriedOverFills = false,
 }: EffectiveEntryInput): string {
   const stateRowIsLive = stateQuantity !== null && stateQuantity > 0;
-  if (stateRowIsLive && stateEntryDate) {
-    return toEtDate(stateEntryDate) ?? todayEt;
-  }
-  return (lastBuyEtDate && toEtDate(lastBuyEtDate)) || todayEt;
+  const entry = stateRowIsLive && stateEntryDate
+    ? (toEtDate(stateEntryDate) ?? todayEt)
+    : (lastBuyEtDate && toEtDate(lastBuyEtDate)) || todayEt;
+
+  // The exemption only ever moves an entry date that reads as TODAY back to the
+  // session the order was committed. It is applied after the entry date is
+  // resolved rather than inside the branches above so that both paths — a state
+  // row written earlier in this same cycle, and the raw fill date — get the same
+  // treatment. Without that, a carried-over fill would be sellable at 10:10 and
+  // unsellable at 10:40, purely on whether the state row had caught up.
+  if (!exemptCarriedOverFills || entry !== todayEt) return entry;
+
+  const placed = lastBuyPlacedEtDate && toEtDate(lastBuyPlacedEtDate);
+  // A placement date at or after today is no evidence of a prior-session
+  // commitment (and a future one means the data is wrong) — leave it blocked.
+  if (!placed || placed >= todayEt) return entry;
+  return placed;
 }

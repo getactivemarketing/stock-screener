@@ -264,6 +264,8 @@ export interface TradingConfig {
   vetoLayerEnabled: boolean;
   vetoLayerEnforce: boolean;
   noSameDaySell: boolean;
+  // Carried-over fill exemption (migration 018). Off by default.
+  sameDaySellExemptsCarryoverFills: boolean;
 }
 
 // Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is

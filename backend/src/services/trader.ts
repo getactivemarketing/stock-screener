@@ -69,6 +69,9 @@ export async function loadTradingConfig(): Promise<TradingConfig> {
     vetoLayerEnabled: (row.veto_layer_enabled as boolean) ?? false,
     vetoLayerEnforce: (row.veto_layer_enforce as boolean) ?? false,
     noSameDaySell: (row.no_same_day_sell as boolean) ?? true,
+    // Migration 018. Defaults false so an unmigrated DB keeps the strict rule.
+    sameDaySellExemptsCarryoverFills:
+      (row.same_day_sell_exempts_carryover_fills as boolean) ?? false,
   };
 }
 
