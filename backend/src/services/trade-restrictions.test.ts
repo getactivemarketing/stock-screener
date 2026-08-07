@@ -171,3 +171,98 @@ describe('resolveEffectiveEntryDate', () => {
     expect(isSameTradingDay(entry, new Date('2026-08-05T23:08:24Z'))).toBe(false);
   });
 });
+
+/**
+ * Carried-over-fill exemption (opt-in, off by default).
+ *
+ * The strict gate treats the FILL as the start of the holding period. But the
+ * bot places GTC limit orders during one session that often do not fill until
+ * the next session's open. On 2026-08-06 WDC, SNDK and APP were all bought from
+ * orders committed the evening of 08-05, filled 09:30-09:34, and flagged for
+ * exit at 10:10 — a same-day round trip by the fill clock, but by the decision
+ * clock the position had been committed the previous session.
+ *
+ * With the exemption on, the holding period starts at the session the order was
+ * PLACED. A genuine intraday flip — order placed and filled and sold the same
+ * session — is still blocked, because its placement date is today too.
+ *
+ * NOTE: this is a deliberate weakening. Under PDT rules a buy and sell on the
+ * same calendar date is a day trade regardless of when the order was placed, so
+ * this exemption only makes sense while the account is exempt from PDT (paper,
+ * or equity above the threshold).
+ */
+describe('resolveEffectiveEntryDate — carried-over fill exemption', () => {
+  const todayEt = '2026-08-06';
+
+  it('is OFF by default: a fill from a prior-session order still counts as today', () => {
+    // WDC: order placed 08-05 18:39 ET, filled 08-06 09:30, no state row yet.
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
+    })).toBe('2026-08-06');
+  });
+
+  it('exempts a fill whose order was placed in a prior session', () => {
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
+      exemptCarriedOverFills: true,
+    })).toBe('2026-08-05');
+  });
+
+  it('still blocks a genuine intraday flip when the exemption is on', () => {
+    // Order placed AND filled today — this is the behaviour the rule exists for.
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-06', todayEt,
+      exemptCarriedOverFills: true,
+    })).toBe('2026-08-06');
+  });
+
+  it('exempts even when a state row written today says the entry is today', () => {
+    // SNDK 08-06: state row from the same cycle carries entry_date = today.
+    // Without this, the position is sellable at 10:10 and unsellable at 10:40.
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: '2026-08-06', stateQuantity: 16,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
+      exemptCarriedOverFills: true,
+    })).toBe('2026-08-05');
+  });
+
+  it('leaves a genuinely older entry alone', () => {
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 1325,
+      lastBuyEtDate: '2026-07-06', lastBuyPlacedEtDate: '2026-07-06', todayEt,
+      exemptCarriedOverFills: true,
+    })).toBe('2026-07-06');
+  });
+
+  it('does not exempt when the placement date is unknown', () => {
+    // No placement date means no evidence the order predates today: block.
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: null, todayEt,
+      exemptCarriedOverFills: true,
+    })).toBe('2026-08-06');
+  });
+
+  it('ignores a placement date that is somehow in the future', () => {
+    expect(resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-07', todayEt,
+      exemptCarriedOverFills: true,
+    })).toBe('2026-08-06');
+  });
+
+  it('end to end: WDC is sellable with the exemption, blocked without it', () => {
+    const input = {
+      stateEntryDate: null, stateQuantity: null,
+      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
+    };
+    const at = new Date('2026-08-06T14:10:51Z'); // 10:10 ET
+    expect(isSameTradingDay(resolveEffectiveEntryDate(input), at)).toBe(true);
+    expect(isSameTradingDay(
+      resolveEffectiveEntryDate({ ...input, exemptCarriedOverFills: true }), at
+    )).toBe(false);
+  });
+});
