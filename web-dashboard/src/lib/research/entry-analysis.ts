@@ -54,6 +54,35 @@ export async function getPlan(planId: number): Promise<{ id: number; ticker: str
   return rows[0] ?? null;
 }
 
+/**
+ * Every staged plan, newest first, with a count of orders that are still live.
+ *
+ * Staged plans place GTC limit buys that survive indefinitely on the broker.
+ * The page previously held `planId` only in component state, so a reload left
+ * those orders running with no way to reconcile or cancel them from the UI —
+ * recovery meant going to Alpaca directly. Listing staged plans gives the page
+ * a way back to them after any reload.
+ */
+export async function listOpenPlans(): Promise<
+  Array<{ id: number; ticker: string; desiredUsd: number; plan: EntryPlanPayload; createdAt: string; liveOrders: number }>
+> {
+  return query(
+    `SELECT p.id,
+            p.ticker,
+            p.desired_position_usd::float8 AS "desiredUsd",
+            p.plan,
+            p.created_at AS "createdAt",
+            count(o.id) FILTER (
+              WHERE lower(o.status) NOT IN ('canceled','cancelled','expired','rejected','filled')
+            )::int AS "liveOrders"
+     FROM entry_plans p
+     LEFT JOIN entry_orders o ON o.entry_plan_id = p.id
+     WHERE p.status = 'staged'
+     GROUP BY p.id
+     ORDER BY p.created_at DESC`
+  );
+}
+
 /** Place all tranches as tagged GTC limit buys; persist entry_orders; mark plan staged. */
 export async function stagePlan(planId: number, key: string, secret: string): Promise<EntryOrderRow[]> {
   const plan = await getPlan(planId);
