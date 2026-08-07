@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   let ticker = $state('');
   let desiredUsd = $state(4000);
   let loading = $state(false);
@@ -8,6 +10,26 @@
   let orders = $state<any[]>([]);
   let staging = $state(false);
   let confirming = $state(false);
+  let openPlans = $state<any[]>([]);
+
+  // Staged plans leave GTC orders live on the broker indefinitely. planId used
+  // to live only in component state, so a reload stranded those orders with no
+  // way to reconcile or cancel them from here. Load them back on mount instead.
+  onMount(loadOpenPlans);
+
+  async function loadOpenPlans() {
+    try {
+      const res = await fetch('/api/research/entry/plans');
+      const data = await res.json();
+      if (res.ok) openPlans = data.plans ?? [];
+    } catch { /* non-fatal: the build flow still works without the resume list */ }
+  }
+
+  async function resumePlan(p: any) {
+    plan = p.plan; planId = p.id; ticker = p.ticker; confirming = false; error = '';
+    orders = [];
+    await refreshStatus();
+  }
 
   async function buildPlan() {
     if (!ticker.trim()) return;
@@ -35,6 +57,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Staging failed');
       orders = data.orders; confirming = false;
+      await loadOpenPlans(); // the plan is now staged and resumable
     } catch (e: any) { error = e.message; }
     staging = false;
   }
@@ -52,7 +75,7 @@
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ planId }),
     });
-    if (res.ok) await refreshStatus();
+    if (res.ok) { await refreshStatus(); await loadOpenPlans(); }
   }
 
   const money = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
@@ -69,6 +92,23 @@
   </div>
 
   {#if error}<p class="error">⚠ {error}</p>{/if}
+
+  {#if openPlans.length > 0}
+    <div class="resume">
+      <h3>Staged plans</h3>
+      <p class="note">These placed GTC orders that stay live on the broker until they fill or you cancel them.</p>
+      {#each openPlans as p}
+        <div class="resume-row">
+          <span><strong>#{p.id} {p.ticker}</strong></span>
+          <span>{p.liveOrders} order{p.liveOrders === 1 ? '' : 's'} still open</span>
+          <span class="dim">{new Date(p.createdAt).toLocaleDateString()}</span>
+          <button onclick={() => resumePlan(p)} disabled={planId === p.id}>
+            {planId === p.id ? 'Open' : 'Resume'}
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   {#if plan}
     <div class="indicators">
@@ -147,4 +187,11 @@
   .confirm p { margin: 0; flex: 1; }
   .actions { display: flex; gap: 0.75rem; }
   .error { color: #f87171; }
+  .resume { background: #14213d; border: 1px solid #1e3a5f; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; }
+  .resume h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+  .resume .note { margin-bottom: 0.6rem; }
+  .resume-row { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; padding: 0.35rem 0; border-top: 1px solid #1e3a5f; }
+  .resume-row button { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
+  .resume-row button:disabled { background: #374151; cursor: default; }
+  .dim { color: #9ca3af; margin-left: auto; }
 </style>
