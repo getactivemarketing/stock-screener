@@ -19,6 +19,7 @@ import {
   etDateString,
 } from './trade-restrictions.js';
 import { fetchResearchOwnedTickers } from './research-positions.js';
+import { fetchPendingBuyTickers } from './open-orders.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -159,6 +160,11 @@ export async function evaluate(
   // account. The bot must never exit them — see fetchResearchOwnedTickers.
   const researchOwned = await fetchResearchOwnedTickers();
 
+  // A buy order that is placed but not yet filled leaves no trace in `positions`,
+  // so without this the next cycle re-evaluates the ticker and queues the order
+  // a second time — see fetchPendingBuyTickers.
+  const pendingBuys = await fetchPendingBuyTickers();
+
   // SELL / HOLD evaluation for existing positions
   for (const pos of positions) {
     if (researchOwned.has(pos.ticker.toUpperCase())) {
@@ -181,6 +187,22 @@ export async function evaluate(
   // BUY / SKIP for new tickers (not already held)
   for (const result of results) {
     if (heldTickers.has(result.ticker)) continue;
+
+    // Logged as a SKIP rather than skipped silently: a suppressed buy that
+    // leaves no decision row is indistinguishable from the candidate never
+    // having been considered.
+    if (pendingBuys.has(result.ticker.toUpperCase())) {
+      decisions.push({
+        ticker: result.ticker,
+        action: 'SKIP',
+        reason: 'Buy order already working for this ticker (not yet filled).',
+        classification: result.classification.recommendation,
+        scores: toLegacyScores(result.scores),
+        tier: result.tier,
+      } as TradeDecision);
+      continue;
+    }
+
     let decision = result.tier === 'speculative'
       ? evaluateSpeculativeBuy(result, positions, posTiers, account, config)
       : evaluateBuy(result, positions, posTiers, account, config);
