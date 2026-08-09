@@ -191,8 +191,11 @@ export async function cancelOrder(orderId: string): Promise<void> {
   await alpacaFetch<any>(`${getBaseUrl()}/v2/orders/${orderId}`, { method: 'DELETE' });
 }
 
-export async function getOrders(status?: 'open' | 'closed' | 'all'): Promise<AlpacaOrder[]> {
-  const params = new URLSearchParams({ limit: '50' });
+export async function getOrders(
+  status?: 'open' | 'closed' | 'all',
+  limit = 50
+): Promise<AlpacaOrder[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
   if (status) params.set('status', status);
 
   const raw = await alpacaFetch<any[]>(`${getBaseUrl()}/v2/orders?${params}`);
