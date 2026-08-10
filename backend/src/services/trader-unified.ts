@@ -361,16 +361,9 @@ async function evaluateSell(
   );
   const state = stateRows[0] ?? null;
 
-  // Most recent filled BUY, used when the state row is a stale close-out. Both
-  // the fill date and the date the order was PLACED come back: they differ
-  // whenever a GTC limit order carries over and fills at the next session's
-  // open, which is the case the carried-over-fill exemption turns on.
-  const buyRows = await db.query<{
-    buy_et_date: string | null;
-    buy_placed_et_date: string | null;
-  }>(
-    `SELECT to_char(COALESCE(filled_at, created_at) AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS buy_et_date,
-            to_char(created_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS buy_placed_et_date
+  // Most recent filled BUY, used when the state row is a stale close-out.
+  const buyRows = await db.query<{ buy_et_date: string | null }>(
+    `SELECT to_char(COALESCE(filled_at, created_at) AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS buy_et_date
      FROM trades
      WHERE ticker = $1 AND action = 'BUY' AND status = 'filled'
      ORDER BY COALESCE(filled_at, created_at) DESC
@@ -378,7 +371,6 @@ async function evaluateSell(
     [ticker]
   );
   const lastBuyEtDate = buyRows[0]?.buy_et_date ?? null;
-  const lastBuyPlacedEtDate = buyRows[0]?.buy_placed_et_date ?? null;
 
   const daysHeld = state?.days_held ?? 0;
   const scanMisses = state?.consecutive_scan_misses ?? 0;
@@ -405,21 +397,7 @@ async function evaluateSell(
     stateQuantity: state?.quantity ?? null,
     lastBuyEtDate,
     todayEt: etDateString(now),
-    lastBuyPlacedEtDate,
-    exemptCarriedOverFills: config.sameDaySellExemptsCarryoverFills,
   });
-
-  if (
-    config.sameDaySellExemptsCarryoverFills &&
-    lastBuyPlacedEtDate &&
-    effectiveEntryDate === lastBuyPlacedEtDate &&
-    lastBuyPlacedEtDate < etDateString(now)
-  ) {
-    console.log(
-      `[trader] ${ticker}: carried-over fill exempt from same-day gate ` +
-        `(order placed ${lastBuyPlacedEtDate}, filled ${lastBuyEtDate ?? 'unknown'})`
-    );
-  }
 
   if (config.noSameDaySell && isSameTradingDay(effectiveEntryDate, now)) {
     const wouldBeReason =
