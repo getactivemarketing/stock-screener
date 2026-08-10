@@ -222,6 +222,7 @@ function parseOrder(raw: any): AlpacaOrder {
     filledAvgPrice: raw.filled_avg_price ? parseFloat(raw.filled_avg_price) : null,
     filledAt: raw.filled_at || null,
     createdAt: raw.created_at,
+    limitPrice: raw.limit_price ? parseFloat(raw.limit_price) : null,
   };
 }
 

@@ -58,21 +58,36 @@ export function pendingBuyTickers(orders: AlpacaOrder[]): Set<string> {
  * pending BUY rows: a stale row costs a missed entry, an empty set costs a
  * double position.
  */
-export async function fetchPendingBuyTickers(): Promise<Set<string>> {
+export async function fetchOpenOrders(): Promise<AlpacaOrder[] | null> {
   try {
     // 500 is Alpaca's per-page maximum; the default 50 could silently truncate
     // a long book and reopen exactly the gap this function exists to close.
-    return pendingBuyTickers(await alpaca.getOrders('open', 500));
+    return await alpaca.getOrders('open', 500);
   } catch (err) {
-    console.error('[Trader] Could not load open orders, falling back to DB:', err);
-    try {
-      const rows = await db.query<{ ticker: string }>(
-        `SELECT DISTINCT ticker FROM trades WHERE action = 'BUY' AND status = 'pending'`
-      );
-      return new Set(rows.map((r) => r.ticker.trim().toUpperCase()));
-    } catch (dbErr) {
-      console.error('[Trader] Pending-buy fallback also failed:', dbErr);
-      return new Set();
-    }
+    console.error('[Trader] Could not load open orders:', err);
+    return null;
   }
+}
+
+/**
+ * Tickers with a working buy order, from the DB rather than Alpaca.
+ *
+ * Only used when the Alpaca call fails. A stale pending row costs a missed
+ * entry for a cycle; an empty set costs a double position.
+ */
+export async function fetchPendingBuyTickersFromDb(): Promise<Set<string>> {
+  try {
+    const rows = await db.query<{ ticker: string }>(
+      `SELECT DISTINCT ticker FROM trades WHERE action = 'BUY' AND status = 'pending'`
+    );
+    return new Set(rows.map((r) => r.ticker.trim().toUpperCase()));
+  } catch (dbErr) {
+    console.error('[Trader] Pending-buy DB fallback failed:', dbErr);
+    return new Set();
+  }
+}
+
+export async function fetchPendingBuyTickers(): Promise<Set<string>> {
+  const orders = await fetchOpenOrders();
+  return orders === null ? fetchPendingBuyTickersFromDb() : pendingBuyTickers(orders);
 }

@@ -19,7 +19,12 @@ import {
   etDateString,
 } from './trade-restrictions.js';
 import { fetchResearchOwnedTickers } from './research-positions.js';
-import { fetchPendingBuyTickers } from './open-orders.js';
+import {
+  fetchOpenOrders,
+  fetchPendingBuyTickersFromDb,
+  pendingBuyTickers,
+} from './open-orders.js';
+import { buildCommitted, addCommitment, type Commitment } from './committed-portfolio.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -162,8 +167,18 @@ export async function evaluate(
 
   // A buy order that is placed but not yet filled leaves no trace in `positions`,
   // so without this the next cycle re-evaluates the ticker and queues the order
-  // a second time — see fetchPendingBuyTickers.
-  const pendingBuys = await fetchPendingBuyTickers();
+  // a second time. One fetch serves both that duplicate check and the
+  // committed-portfolio view below.
+  const openOrders = await fetchOpenOrders();
+  const pendingBuys =
+    openOrders === null ? await fetchPendingBuyTickersFromDb() : pendingBuyTickers(openOrders);
+
+  // The portfolio the risk checks must see: filled positions PLUS capital already
+  // committed to working orders. Grows as this cycle approves buys. See
+  // buildCommitted() for what counting only filled positions cost.
+  const lastPrices: Record<string, number> = {};
+  for (const r of results) lastPrices[r.ticker.toUpperCase()] = r.price.price;
+  let committed = buildCommitted(positions, openOrders ?? [], lastPrices);
 
   // SELL / HOLD evaluation for existing positions
   for (const pos of positions) {
@@ -204,12 +219,21 @@ export async function evaluate(
     }
 
     let decision = result.tier === 'speculative'
-      ? evaluateSpeculativeBuy(result, positions, posTiers, account, config)
-      : evaluateBuy(result, positions, posTiers, account, config);
+      ? evaluateSpeculativeBuy(result, committed, posTiers, account, config)
+      : evaluateBuy(result, committed, posTiers, account, config);
 
     // Veto gate: only runs on BUY-grade candidates, gated by config flag
     if (decision.action === 'BUY' && config.vetoLayerEnabled) {
       decision = await applyVetoGate(decision, result, config);
+    }
+
+    // Count an approved buy against the limits the REST of this cycle sees.
+    // Without this every candidate validates against the same frozen snapshot,
+    // which is how five orders in one cycle each sized themselves as if they
+    // were the only one.
+    if (decision.action === 'BUY') {
+      const value = (decision.quantity ?? 0) * result.price.price;
+      committed = addCommitment(committed, result.ticker, value);
     }
 
     decisions.push(decision);
@@ -532,7 +556,9 @@ async function evaluateSell(
 
 function evaluateBuy(
   result: UnifiedPipelineResult,
-  positions: AlpacaPosition[],
+  // The COMMITTED portfolio (holdings + working orders + same-cycle approvals),
+  // not just filled positions — see buildCommitted().
+  positions: Commitment[],
   posTiers: Map<string, ScanTier>,
   account: AlpacaAccount,
   config: TradingConfig
@@ -673,7 +699,8 @@ function evaluateBuy(
 // Intended for meme/squeeze candidates — see migration 011 for rationale.
 function evaluateSpeculativeBuy(
   result: UnifiedPipelineResult,
-  positions: AlpacaPosition[],
+  /** COMMITTED portfolio, see evaluateBuy. */
+  positions: Commitment[],
   posTiers: Map<string, ScanTier>,
   account: AlpacaAccount,
   config: TradingConfig,

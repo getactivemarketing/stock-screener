@@ -1,13 +1,28 @@
-import type { AlpacaAccount, AlpacaPosition, TradingConfig, RiskCheckResult } from '../types/index.js';
+import type { AlpacaAccount, TradingConfig, RiskCheckResult } from '../types/index.js';
+
+/**
+ * Anything occupying a position slot: a real holding, a working buy order, or a
+ * buy already approved earlier in this cycle. AlpacaPosition satisfies this
+ * structurally, so existing callers are unaffected.
+ */
+export interface PositionLike {
+  ticker: string;
+  marketValue: number;
+}
 
 /**
  * Pre-trade risk validation. Called before every BUY order.
+ *
+ * `positions` must be the COMMITTED portfolio, not just Alpaca's filled
+ * positions — see buildCommitted(). Passing only filled positions is what let
+ * the account reach 10 positions and 99% heat against limits of 5 and 40%:
+ * unfilled orders and same-cycle approvals were invisible to every check below.
  */
 export function validateBuy(
   ticker: string,
   orderValue: number,
   account: AlpacaAccount,
-  positions: AlpacaPosition[],
+  positions: PositionLike[],
   config: TradingConfig
 ): RiskCheckResult {
   // Check daily loss limit — blocks ALL buys
