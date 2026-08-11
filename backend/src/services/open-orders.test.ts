@@ -12,6 +12,7 @@ const order = (o: Partial<AlpacaOrder>): AlpacaOrder => ({
   filledAvgPrice: null,
   filledAt: null,
   createdAt: '2026-08-07T20:11:15Z',
+  limitPrice: null,
   ...o,
 });
 

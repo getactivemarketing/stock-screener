@@ -318,6 +318,9 @@ export interface AlpacaOrder {
   filledAvgPrice: number | null;
   filledAt: string | null;
   createdAt: string;
+  /** Limit price for LMT orders, null for market orders. Used to value a
+   *  working order as committed capital before it fills. */
+  limitPrice: number | null;
 }
 
 export interface RiskCheckResult {
