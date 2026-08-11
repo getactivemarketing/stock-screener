@@ -264,6 +264,9 @@ export interface TradingConfig {
   vetoLayerEnabled: boolean;
   vetoLayerEnforce: boolean;
   noSameDaySell: boolean;
+  /** Exit an earnings_event position when days-to-print <= this, and refuse to
+   *  open one inside the same window. 0 disables. Migration 019. */
+  preEarningsExitDays: number;
 }
 
 // Scan tier: 'core' is the standard value+catalyst algo, 'speculative' is
