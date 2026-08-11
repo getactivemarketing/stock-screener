@@ -1,5 +1,23 @@
 -- Migration 018: opt-in exemption for carried-over fills in the same-day-sell gate.
 --
+-- ============================================================================
+-- DEPRECATED 2026-08-10. The code that read this column was reverted the same
+-- day it went live. DO NOT set it TRUE; nothing reads it.
+--
+-- It was enabled on 2026-08-07 and on the first session it applied — Monday
+-- 2026-08-10 — it produced three same-day round trips: MP, MU and ONDS were all
+-- bought at the 09:30 open from orders placed Friday, then sold at 10:10. That
+-- is precisely the behaviour this file's own CAUTION note described, and it is
+-- exactly what the account must avoid: every position is required to be held
+-- overnight so the account never books a day trade.
+--
+-- The column is left in place rather than dropped because dropping it is
+-- destructive and an unread column is harmless. Kept in the repo so a rebuild
+-- from migrations still matches production.
+-- ============================================================================
+--
+-- ORIGINAL INTENT, for the record:
+--
 -- The bot places GTC limit orders in one session that frequently do not fill
 -- until the next session's open. The strict gate starts the holding period at
 -- the FILL, so those positions cannot be exited on the day they fill even though

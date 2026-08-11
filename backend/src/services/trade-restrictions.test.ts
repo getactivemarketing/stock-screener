@@ -173,96 +173,46 @@ describe('resolveEffectiveEntryDate', () => {
 });
 
 /**
- * Carried-over-fill exemption (opt-in, off by default).
+ * THE OVERNIGHT-HOLD INVARIANT — do not weaken these without an explicit
+ * decision from the account owner.
  *
- * The strict gate treats the FILL as the start of the holding period. But the
- * bot places GTC limit orders during one session that often do not fill until
- * the next session's open. On 2026-08-06 WDC, SNDK and APP were all bought from
- * orders committed the evening of 08-05, filled 09:30-09:34, and flagged for
- * exit at 10:10 — a same-day round trip by the fill clock, but by the decision
- * clock the position had been committed the previous session.
+ * Every position must be held at least one overnight. A buy and a sell on the
+ * same calendar date is a day trade no matter when the buy ORDER was placed,
+ * and the account must never book one.
  *
- * With the exemption on, the holding period starts at the session the order was
- * PLACED. A genuine intraday flip — order placed and filled and sold the same
- * session — is still blocked, because its placement date is today too.
- *
- * NOTE: this is a deliberate weakening. Under PDT rules a buy and sell on the
- * same calendar date is a day trade regardless of when the order was placed, so
- * this exemption only makes sense while the account is exempt from PDT (paper,
- * or equity above the threshold).
+ * This was violated once, on 2026-08-10, by an opt-in exemption that started a
+ * position's holding period at the session its order was PLACED rather than
+ * FILLED. Orders placed Friday evening filled at Monday's 09:30 open and were
+ * sold at 10:10 — MP, MU and ONDS, three day trades in one cycle. The exemption
+ * was reverted the same day; migration 018's column survives but nothing reads
+ * it. These tests exist so a future "the order was really from yesterday"
+ * argument has to break a named invariant to get through.
  */
-describe('resolveEffectiveEntryDate — carried-over fill exemption', () => {
-  const todayEt = '2026-08-06';
+describe('overnight-hold invariant', () => {
+  const todayEt = '2026-08-10';
+  const duringSession = new Date('2026-08-10T14:10:48Z'); // 10:10 ET
 
-  it('is OFF by default: a fill from a prior-session order still counts as today', () => {
-    // WDC: order placed 08-05 18:39 ET, filled 08-06 09:30, no state row yet.
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: null, stateQuantity: null,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
-    })).toBe('2026-08-06');
+  it('a position filled today cannot be sold today, whenever its order was placed', () => {
+    // MP/MU/ONDS: order placed Friday 08-07, filled at Monday's open, no state
+    // row yet because the sell ran before portfolio_state was refreshed.
+    const entry = resolveEffectiveEntryDate({
+      stateEntryDate: null, stateQuantity: null, lastBuyEtDate: '2026-08-10', todayEt,
+    });
+    expect(isSameTradingDay(entry, duringSession)).toBe(true);
   });
 
-  it('exempts a fill whose order was placed in a prior session', () => {
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: null, stateQuantity: null,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
-      exemptCarriedOverFills: true,
-    })).toBe('2026-08-05');
+  it('holds the line when a stale close-out row claims an older entry', () => {
+    const entry = resolveEffectiveEntryDate({
+      stateEntryDate: '2026-07-06', stateQuantity: 0, lastBuyEtDate: '2026-08-10', todayEt,
+    });
+    expect(isSameTradingDay(entry, duringSession)).toBe(true);
   });
 
-  it('still blocks a genuine intraday flip when the exemption is on', () => {
-    // Order placed AND filled today — this is the behaviour the rule exists for.
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: null, stateQuantity: null,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-06', todayEt,
-      exemptCarriedOverFills: true,
-    })).toBe('2026-08-06');
-  });
-
-  it('exempts even when a state row written today says the entry is today', () => {
-    // SNDK 08-06: state row from the same cycle carries entry_date = today.
-    // Without this, the position is sellable at 10:10 and unsellable at 10:40.
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: '2026-08-06', stateQuantity: 16,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
-      exemptCarriedOverFills: true,
-    })).toBe('2026-08-05');
-  });
-
-  it('leaves a genuinely older entry alone', () => {
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: '2026-07-06', stateQuantity: 1325,
-      lastBuyEtDate: '2026-07-06', lastBuyPlacedEtDate: '2026-07-06', todayEt,
-      exemptCarriedOverFills: true,
-    })).toBe('2026-07-06');
-  });
-
-  it('does not exempt when the placement date is unknown', () => {
-    // No placement date means no evidence the order predates today: block.
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: null, stateQuantity: null,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: null, todayEt,
-      exemptCarriedOverFills: true,
-    })).toBe('2026-08-06');
-  });
-
-  it('ignores a placement date that is somehow in the future', () => {
-    expect(resolveEffectiveEntryDate({
-      stateEntryDate: null, stateQuantity: null,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-07', todayEt,
-      exemptCarriedOverFills: true,
-    })).toBe('2026-08-06');
-  });
-
-  it('end to end: WDC is sellable with the exemption, blocked without it', () => {
-    const input = {
-      stateEntryDate: null, stateQuantity: null,
-      lastBuyEtDate: '2026-08-06', lastBuyPlacedEtDate: '2026-08-05', todayEt,
-    };
-    const at = new Date('2026-08-06T14:10:51Z'); // 10:10 ET
-    expect(isSameTradingDay(resolveEffectiveEntryDate(input), at)).toBe(true);
-    expect(isSameTradingDay(
-      resolveEffectiveEntryDate({ ...input, exemptCarriedOverFills: true }), at
-    )).toBe(false);
+  it('a position held overnight is still sellable — the rule is one night, not forever', () => {
+    // NBIS: bought Friday 10:40, sold Monday 10:10. Not a day trade; allowed.
+    const entry = resolveEffectiveEntryDate({
+      stateEntryDate: '2026-08-07', stateQuantity: 63, lastBuyEtDate: '2026-08-07', todayEt,
+    });
+    expect(isSameTradingDay(entry, duringSession)).toBe(false);
   });
 });
