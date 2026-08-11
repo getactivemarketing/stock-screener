@@ -25,6 +25,7 @@ import {
   pendingBuyTickers,
 } from './open-orders.js';
 import { buildCommitted, addCommitment, type Commitment } from './committed-portfolio.js';
+import { exitsBeforeEarnings, blocksEntryBeforeEarnings, daysToCatalyst } from './earnings-window.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -115,7 +116,8 @@ type ExitReason =
   | 'max_hold'
   | 'reclass_avoid'
   | 'scan_miss'
-  | 'min_hold';
+  | 'min_hold'
+  | 'pre_earnings';
 
 // Extended decision with unified-specific attribution fields (stored via cast
 // on the legacy TradeDecision shape so Phase G can consume uniformly).
@@ -376,7 +378,8 @@ async function evaluateSell(
     // a close-out row can be told apart from a live holding.
     `SELECT days_held, consecutive_scan_misses,
             to_char(entry_date, 'YYYY-MM-DD') AS entry_date,
-            quantity, entry_category, entry_catalyst_date
+            quantity, entry_category,
+            to_char(entry_catalyst_date, 'YYYY-MM-DD') AS entry_catalyst_date
      FROM portfolio_state
      WHERE ticker = $1
      ORDER BY created_at DESC
@@ -449,6 +452,36 @@ async function evaluateSell(
         ticker,
         action: 'SELL' as const,
         reason: `Stop-loss: position down ${position.unrealizedPlPct.toFixed(2)}% (limit -${stopLossPct}%)`,
+        quantity: position.quantity,
+        classification,
+        scores,
+        tradeRationale,
+        tier: posTier,
+      },
+      extras
+    );
+  }
+
+  // 1b. Pre-earnings exit. Sits directly after stop-loss because it is the one
+  //     exit the bot cannot defer: it is not allowed to sell on the day it
+  //     bought, so a print it holds into is a gap it can never react to — past
+  //     the stop, overnight, with the market closed. Labelled distinctly rather
+  //     than folded into max_hold so the reason stays honest.
+  if (
+    exitsBeforeEarnings({
+      category,
+      catalystDate: state?.entry_catalyst_date ?? null,
+      todayEt: etDateString(now),
+      exitDays: config.preEarningsExitDays,
+    })
+  ) {
+    const d2e = daysToCatalyst(state?.entry_catalyst_date ?? null, etDateString(now));
+    extras.exitReason = 'pre_earnings';
+    return Object.assign(
+      {
+        ticker,
+        action: 'SELL' as const,
+        reason: `Pre-earnings exit: print in ${d2e}d (<= ${config.preEarningsExitDays}d), cannot exit after the gap`,
         quantity: position.quantity,
         classification,
         scores,
@@ -583,6 +616,25 @@ function evaluateBuy(
     keyRisk,
     tier: 'core' as ScanTier,
   };
+
+  // Gate: too close to the print to open at all. The exit rule above cannot
+  // rescue this one — a position bought today cannot be sold until tomorrow, so
+  // if the print is tomorrow there is no session in which the exit could act.
+  // Admitting it would be a guaranteed hold-through of an un-exitable gap.
+  if (
+    blocksEntryBeforeEarnings({
+      catalystDate: result.catalystDate,
+      todayEt: etDateString(new Date()),
+      exitDays: config.preEarningsExitDays,
+    })
+  ) {
+    const d2e = daysToCatalyst(result.catalystDate, etDateString(new Date()));
+    return {
+      ...baseDecision,
+      action: 'SKIP',
+      reason: `Earnings in ${d2e}d: too close to exit before the print (<= ${config.preEarningsExitDays}d)`,
+    };
+  }
 
   // Gate: tradeable
   if (!result.tradeable) {

@@ -69,6 +69,8 @@ export async function loadTradingConfig(): Promise<TradingConfig> {
     vetoLayerEnabled: (row.veto_layer_enabled as boolean) ?? false,
     vetoLayerEnforce: (row.veto_layer_enforce as boolean) ?? false,
     noSameDaySell: (row.no_same_day_sell as boolean) ?? true,
+    // Migration 019. Defaults 0 (disabled) so an unmigrated DB is unchanged.
+    preEarningsExitDays: Number(row.pre_earnings_exit_days) || 0,
   };
 }
 
