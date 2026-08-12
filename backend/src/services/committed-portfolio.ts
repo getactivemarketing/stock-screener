@@ -37,9 +37,13 @@ export function buildCommitted(
   openOrders: AlpacaOrder[],
   lastPrices: Record<string, number> = {}
 ): Commitment[] {
+  // Absolute value, because heat means exposure and a short is exposure. Alpaca
+  // reports market_value negative for shorts, so passing it through would make a
+  // short SUBTRACT from measured heat and hand the bot headroom on the very cap
+  // meant to prevent over-exposure. No-op for longs. See long-only-guard.ts.
   const committed: Commitment[] = positions.map((p) => ({
     ticker: p.ticker,
-    marketValue: p.marketValue,
+    marketValue: Math.abs(p.marketValue),
   }));
   const seen = new Set(committed.map((c) => c.ticker.toUpperCase()));
 

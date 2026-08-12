@@ -25,6 +25,7 @@ import {
   pendingBuyTickers,
 } from './open-orders.js';
 import { buildCommitted, addCommitment, type Commitment } from './committed-portfolio.js';
+import { partitionByDirection } from './long-only-guard.js';
 import { exitsBeforeEarnings, blocksEntryBeforeEarnings, daysToCatalyst } from './earnings-window.js';
 import { fetchSoldTodayTickers } from './day-trade-guard.js';
 import {
@@ -189,8 +190,35 @@ export async function evaluate(
   // decision being wrong on its own.
   const soldToday = await fetchSoldTodayTickers(etDateString(new Date()));
 
+  // Every exit rule below assumes a long: `unrealizedPlPct` down means losing,
+  // and heat is a sum of market values. A short breaks both. None has ever
+  // existed here, but nothing in the pipeline reads position side, so one would
+  // pass unnoticed — see long-only-guard.ts. Quarantine rather than act.
+  const { nonLong } = partitionByDirection(positions);
+  for (const p of nonLong) {
+    console.error(
+      `[Trader] NON-LONG POSITION ${p.ticker} (side=${p.side ?? 'missing'}, qty=${p.quantity}, ` +
+        `mktval=${p.marketValue}). The bot is long-only and will NOT manage it. ` +
+        `Exposure counts toward risk limits at absolute value. Close it manually if unintended.`
+    );
+  }
+  const nonLongTickers = new Set(nonLong.map((p) => p.ticker.toUpperCase()));
+
   // SELL / HOLD evaluation for existing positions
   for (const pos of positions) {
+    if (nonLongTickers.has(pos.ticker.toUpperCase())) {
+      decisions.push({
+        ticker: pos.ticker,
+        action: 'HOLD',
+        reason:
+          `Non-long position (side=${pos.side ?? 'missing'}, qty=${pos.quantity}): ` +
+          `bot is long-only, exits suppressed. Manual review required.`,
+        classification: resultMap.get(pos.ticker)?.classification.recommendation ?? 'unknown',
+        scores: { attention: 0, momentum: 0, fundamentals: 0, risk: 0 },
+        tier: posTiers.get(pos.ticker) ?? 'core',
+      } as TradeDecision);
+      continue;
+    }
     if (researchOwned.has(pos.ticker.toUpperCase())) {
       decisions.push({
         ticker: pos.ticker,
