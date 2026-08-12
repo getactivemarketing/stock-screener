@@ -82,6 +82,23 @@ describe('buildCommitted', () => {
     ];
     expect(buildCommitted(positions, working)).toHaveLength(4);
   });
+
+  it('counts a SHORT as positive exposure, never as negative heat', () => {
+    // Alpaca reports market_value negative for a short. Passed through as-is it
+    // would SUBTRACT from the heat total in risk.ts:59 — a $10k short granting
+    // $10k of extra headroom on the cap that exists to prevent over-exposure.
+    // A short is exposure like any other, so it is counted at absolute value.
+    expect(buildCommitted([pos('SHRT', -10_000)], [])).toEqual([
+      { ticker: 'SHRT', marketValue: 10_000 },
+    ]);
+  });
+
+  it('leaves a long position value untouched', () => {
+    // Guards the absolute-value fix above from changing ordinary behaviour.
+    expect(buildCommitted([pos('NBIS', 11_842)], [])).toEqual([
+      { ticker: 'NBIS', marketValue: 11_842 },
+    ]);
+  });
 });
 
 describe('addCommitment', () => {
