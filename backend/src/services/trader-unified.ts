@@ -26,6 +26,7 @@ import {
 } from './open-orders.js';
 import { buildCommitted, addCommitment, type Commitment } from './committed-portfolio.js';
 import { exitsBeforeEarnings, blocksEntryBeforeEarnings, daysToCatalyst } from './earnings-window.js';
+import { fetchSoldTodayTickers } from './day-trade-guard.js';
 import {
   loadTradingConfig as _loadTradingConfig,
   reconcilePendingOrders as _reconcilePendingOrders,
@@ -182,6 +183,12 @@ export async function evaluate(
   for (const r of results) lastPrices[r.ticker.toUpperCase()] = r.price.price;
   let committed = buildCommitted(positions, openOrders ?? [], lastPrices);
 
+  // Re-entering a ticker sold today is a day trade just as surely as selling one
+  // bought today — FINRA counts both directions. The overnight rule only guards
+  // the sell side, which is how NVDA booked one on 2026-08-11 with neither
+  // decision being wrong on its own.
+  const soldToday = await fetchSoldTodayTickers(etDateString(new Date()));
+
   // SELL / HOLD evaluation for existing positions
   for (const pos of positions) {
     if (researchOwned.has(pos.ticker.toUpperCase())) {
@@ -213,6 +220,19 @@ export async function evaluate(
         ticker: result.ticker,
         action: 'SKIP',
         reason: 'Buy order already working for this ticker (not yet filled).',
+        classification: result.classification.recommendation,
+        scores: toLegacyScores(result.scores),
+        tier: result.tier,
+      } as TradeDecision);
+      continue;
+    }
+
+    // Mirror of the working-order check above, for the other direction.
+    if (soldToday.has(result.ticker.toUpperCase())) {
+      decisions.push({
+        ticker: result.ticker,
+        action: 'SKIP',
+        reason: 'Sold today: re-entering would book a day trade.',
         classification: result.classification.recommendation,
         scores: toLegacyScores(result.scores),
         tier: result.tier,
