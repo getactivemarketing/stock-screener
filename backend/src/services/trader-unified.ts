@@ -401,7 +401,7 @@ async function fetchPositionTiers(tickers: string[]): Promise<Map<string, ScanTi
   return map;
 }
 
-async function evaluateSell(
+export async function evaluateSell(
   position: AlpacaPosition,
   result: UnifiedPipelineResult | null,
   config: TradingConfig,
@@ -605,23 +605,28 @@ async function evaluateSell(
     }
   }
 
-  // 5. Scan miss: ticker absent from last N scans
-  if (scanMisses >= config.scanMissMax) {
-    extras.exitReason = 'scan_miss';
-    return Object.assign(
-      {
-        ticker,
-        action: 'SELL' as const,
-        reason: `Scan miss: absent from ${scanMisses} consecutive scans (limit ${config.scanMissMax})`,
-        quantity: position.quantity,
-        classification,
-        scores,
-        tradeRationale,
-        tier: posTier,
-      },
-      extras
-    );
-  }
+  // 5. Scan miss: REMOVED as an exit on 2026-08-12. The counter is still kept
+  //    (it is a useful attention signal and appears in the HOLD reason below),
+  //    but absence from the scan no longer sells.
+  //
+  //    The scan is a capacity-limited ranking of ~18 tickers ordered by social
+  //    attention, not a verdict on a holding. A position leaves it when
+  //    eighteen other tickers are noisier, which says nothing about the
+  //    position. At scan_miss_max = 3 on a 30-minute cron, ninety minutes off
+  //    the list was enough to sell.
+  //
+  //    Post-fix exits (since the entry_date repair on 2026-08-03) were:
+  //      scan_miss 22 | reclass_avoid 12 | max_hold 3 | pre_earnings 2 | catalyst_fade 2
+  //    scan_miss was 54% of all exits and 36% of them were re-bought within
+  //    five days. APP left and rejoined the scan four times in one session:
+  //    three absences sold it at 10:10, it was back on the list by 14:39, and
+  //    the buy logic asked for it seven more times — the churn the day-trade
+  //    guards were left to absorb. NVDA exited this way with its composite
+  //    UP, 39 at entry against 45 at exit.
+  //
+  //    Nothing replaces it: stop_loss, max_hold, reclass_avoid, pre_earnings
+  //    and catalyst_fade all still bound the position, and exit-rules.test.ts
+  //    asserts the two that matter still fire while a ticker is off the scan.
 
   // HOLD
   return {
