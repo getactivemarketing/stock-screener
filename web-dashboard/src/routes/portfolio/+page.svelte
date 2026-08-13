@@ -307,6 +307,9 @@
     <button class:active={activeTab === 'aiTrades'} on:click={() => activeTab = 'aiTrades'}>
       AI Trades ({aiTradesTotal})
     </button>
+    <button class:active={activeTab === 'history'} on:click={() => activeTab = 'history'}>
+      History ({summary?.count ?? 0})
+    </button>
   </div>
 
   <!-- Positions Tab -->
@@ -534,6 +537,65 @@
         {/each}
       {:else}
         <p class="no-data">No AI trades yet. Enable trading in config to start.</p>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- History Tab -->
+  {#if activeTab === 'history'}
+    <div class="card">
+      {#if historyError}
+        <p class="note">{historyError}</p>
+      {:else if summary && summary.count > 0}
+        <div class="stats-grid">
+          <div class="card stat-card">
+            <div class="stat-value">{formatCurrency(summary.realizedPl)}</div>
+            <div class="stat-label">REALIZED P/L (GROSS)</div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-value">{summary.winRatePct?.toFixed(1) ?? '—'}%</div>
+            <div class="stat-label">WIN RATE ({summary.winCount}W / {summary.lossCount}L)</div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-value">{summary.avgHoldDays?.toFixed(1) ?? '—'}d</div>
+            <div class="stat-label">AVG HOLD</div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-value">{summary.count}</div>
+            <div class="stat-label">ROUND TRIPS</div>
+          </div>
+        </div>
+        <p class="note">
+          Realized P/L is gross — the trades table records no commissions, and this is a
+          paper account.
+        </p>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Ticker</th><th>In</th><th>Out</th><th>Held</th>
+              <th>Qty</th><th>Cost</th><th>Proceeds</th><th>Realized</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each episodes.filter((e) => !e.isOpen) as ep}
+              <tr>
+                <td><a href="/ticker/{ep.ticker}"><strong>{ep.ticker}</strong></a></td>
+                <td>{ep.openEtDate}</td>
+                <td>{ep.closeEtDate}</td>
+                <td>{ep.holdDays}d{#if ep.sameEtDay} <span class="note">same day</span>{/if}</td>
+                <td>{ep.peakQuantity}</td>
+                <td>{formatCurrency(ep.totalCost)}</td>
+                <td>{formatCurrency(ep.totalProceeds)}</td>
+                <td class={(ep.realizedPl ?? 0) >= 0 ? 'positive' : 'negative'}>
+                  {formatCurrency(ep.realizedPl ?? 0)}
+                  ({formatPercent(ep.realizedPlPct ?? 0)})
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="note">No closed round trips yet.</p>
       {/if}
     </div>
   {/if}
