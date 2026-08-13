@@ -117,9 +117,9 @@ can silently disagree.
 | re-entry count | episodes per ticker | |
 | classification at entry, rationale | `trades.classification`, `trade_rationale` | first buy of the episode |
 
-`portfolio_state` is still read for one thing the ledger cannot know:
-`classification_at_entry` where the trade row lacks it. That is a display nicety, not a
-date, so a disagreement there is harmless.
+`portfolio_state` is not read at all. It was considered as a fallback for
+`classification_at_entry`, but that is unnecessary: `trades.classification` is populated
+on 756 of 756 filled buys (verified 2026-08-13), so the ledger alone is sufficient.
 
 **Trap 1 — timezone.** Every ET-date grouping over `filled_at` must use
 `AT TIME ZONE 'America/New_York'`, and if `portfolio_state.entry_date` is ever read it
