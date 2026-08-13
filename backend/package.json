@@ -13,6 +13,7 @@
     "sector-research": "tsx src/sector-research.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "returns": "tsx src/return-tracker.ts",
+    "attention": "tsx src/attention-runner.ts",
     "test": "vitest run"
   },
   "keywords": [

@@ -1,0 +1,13 @@
+# backend/railway.attention.toml
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm run attention"
+restartPolicyType = "never"
+
+# Every 30 minutes, 24/7 -- deliberately NOT restricted to market hours. Retail
+# attention builds overnight and at weekends, which the screener pipeline's
+# `*/30 14-22 * * 1-5` window cannot see.
+[cron]
+schedule = "*/30 * * * *"
