@@ -163,3 +163,82 @@ export function buildEpisodes(trades: TradeRow[]): EpisodeResult {
   episodes.sort((a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt));
   return { episodes, anomalies };
 }
+
+export interface ClosedSummary {
+  count: number;
+  realizedPl: number;
+  winCount: number;
+  lossCount: number;
+  winRatePct: number | null;
+  avgHoldDays: number | null;
+}
+
+/**
+ * Performance over CLOSED episodes only. Open positions are excluded entirely:
+ * they have no realized result, and counting one as a zero would drag the win
+ * rate down with a trade that has not finished happening.
+ */
+export function summarizeClosed(episodes: Episode[]): ClosedSummary {
+  const done = episodes.filter((e) => !e.isOpen && e.realizedPl !== null);
+  if (done.length === 0) {
+    return { count: 0, realizedPl: 0, winCount: 0, lossCount: 0, winRatePct: null, avgHoldDays: null };
+  }
+  const realizedPl = done.reduce((sum, e) => sum + (e.realizedPl ?? 0), 0);
+  const winCount = done.filter((e) => (e.realizedPl ?? 0) > 0).length;
+  const lossCount = done.filter((e) => (e.realizedPl ?? 0) < 0).length;
+  const holds = done.map((e) => e.holdDays ?? 0);
+  return {
+    count: done.length,
+    realizedPl,
+    winCount,
+    lossCount,
+    winRatePct: (winCount / done.length) * 100,
+    avgHoldDays: holds.reduce((a, b) => a + b, 0) / holds.length,
+  };
+}
+
+export interface BehaviourStats {
+  reEntries: Array<{ ticker: string; episodes: number }>;
+  sameDayByDate: Array<{ etDate: string; count: number }>;
+  holdBuckets: Array<{ label: string; count: number }>;
+}
+
+/**
+ * How the bot behaved, as opposed to how it performed. Re-entry counts and
+ * same-day round trips are the signals that surfaced the no_same_day_sell gate
+ * leak by hand on 2026-08-13; this makes them visible without writing SQL.
+ */
+export function behaviourStats(episodes: Episode[]): BehaviourStats {
+  const perTicker = new Map<string, number>();
+  for (const e of episodes) {
+    perTicker.set(e.ticker, (perTicker.get(e.ticker) ?? 0) + 1);
+  }
+  const reEntries = [...perTicker.entries()]
+    .map(([ticker, count]) => ({ ticker, episodes: count }))
+    .sort((a, b) => b.episodes - a.episodes || a.ticker.localeCompare(b.ticker));
+
+  const perDate = new Map<string, number>();
+  for (const e of episodes) {
+    if (!e.sameEtDay || !e.closeEtDate) continue;
+    perDate.set(e.closeEtDate, (perDate.get(e.closeEtDate) ?? 0) + 1);
+  }
+  const sameDayByDate = [...perDate.entries()]
+    .map(([etDate, count]) => ({ etDate, count }))
+    .sort((a, b) => a.etDate.localeCompare(b.etDate));
+
+  const buckets = [
+    { label: 'same day', count: 0 },
+    { label: '1-3d', count: 0 },
+    { label: '4-7d', count: 0 },
+    { label: '8d+', count: 0 },
+  ];
+  for (const e of episodes) {
+    if (e.isOpen || e.holdDays === null) continue;
+    if (e.holdDays === 0) buckets[0].count++;
+    else if (e.holdDays <= 3) buckets[1].count++;
+    else if (e.holdDays <= 7) buckets[2].count++;
+    else buckets[3].count++;
+  }
+
+  return { reEntries, sameDayByDate, holdBuckets: buckets };
+}

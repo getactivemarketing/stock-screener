@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildEpisodes, etDateString, type TradeRow } from './episodes';
+import { buildEpisodes, etDateString, summarizeClosed, behaviourStats, type TradeRow, type Episode } from './episodes';
 
 const buy = (
   ticker: string,
@@ -158,5 +158,111 @@ describe('buildEpisodes', () => {
     expect(episodes).toHaveLength(1);
     expect(episodes[0].classificationAtEntry).toBe('runner');
     expect(episodes[0].rationaleAtEntry).toBe('test thesis');
+  });
+});
+
+/** Minimal closed episode for summary tests. */
+const closed = (o: Partial<Episode> & { ticker: string; realizedPl: number }): Episode => ({
+  index: 0,
+  openedAt: '2026-08-03T14:00:00Z',
+  closedAt: '2026-08-05T14:00:00Z',
+  openEtDate: '2026-08-03',
+  closeEtDate: '2026-08-05',
+  peakQuantity: 10,
+  totalCost: 1000,
+  totalProceeds: 1000 + o.realizedPl,
+  realizedPlPct: (o.realizedPl / 1000) * 100,
+  holdDays: 2,
+  isOpen: false,
+  sameEtDay: false,
+  classificationAtEntry: null,
+  rationaleAtEntry: null,
+  ...o,
+} as Episode);
+
+describe('summarizeClosed', () => {
+  it('totals realized P/L and counts wins and losses', () => {
+    const s = summarizeClosed([
+      closed({ ticker: 'AAA', realizedPl: 100 }),
+      closed({ ticker: 'BBB', realizedPl: -40 }),
+      closed({ ticker: 'CCC', realizedPl: 60 }),
+    ]);
+    expect(s.count).toBe(3);
+    expect(s.realizedPl).toBe(120);
+    expect(s.winCount).toBe(2);
+    expect(s.lossCount).toBe(1);
+    expect(s.winRatePct).toBeCloseTo(66.667, 2);
+  });
+
+  it('EXCLUDES open episodes from every figure', () => {
+    // An open position has no realized result; counting it as a zero-P/L loss
+    // would drag the win rate down with a trade that has not happened yet.
+    const open = { ...closed({ ticker: 'ZZZ', realizedPl: 0 }), isOpen: true, realizedPl: null };
+    const s = summarizeClosed([closed({ ticker: 'AAA', realizedPl: 100 }), open as Episode]);
+    expect(s.count).toBe(1);
+    expect(s.realizedPl).toBe(100);
+  });
+
+  it('averages hold duration across closed episodes', () => {
+    const s = summarizeClosed([
+      closed({ ticker: 'AAA', realizedPl: 10, holdDays: 1 }),
+      closed({ ticker: 'BBB', realizedPl: 10, holdDays: 3 }),
+    ]);
+    expect(s.avgHoldDays).toBe(2);
+  });
+
+  it('returns nulls rather than NaN when there is nothing closed', () => {
+    const s = summarizeClosed([]);
+    expect(s.count).toBe(0);
+    expect(s.realizedPl).toBe(0);
+    expect(s.winRatePct).toBeNull();
+    expect(s.avgHoldDays).toBeNull();
+  });
+});
+
+describe('behaviourStats', () => {
+  it('counts episodes per ticker, most re-entered first', () => {
+    const b = behaviourStats([
+      closed({ ticker: 'ONDS', realizedPl: 1 }),
+      closed({ ticker: 'ONDS', realizedPl: 1 }),
+      closed({ ticker: 'ONDS', realizedPl: 1 }),
+      closed({ ticker: 'AAA', realizedPl: 1 }),
+    ]);
+    expect(b.reEntries[0]).toEqual({ ticker: 'ONDS', episodes: 3 });
+  });
+
+  it('counts same-day round trips per ET date, oldest first', () => {
+    const b = behaviourStats([
+      closed({ ticker: 'AAA', realizedPl: 1, sameEtDay: true, openEtDate: '2026-08-06', closeEtDate: '2026-08-06' }),
+      closed({ ticker: 'BBB', realizedPl: 1, sameEtDay: true, openEtDate: '2026-08-06', closeEtDate: '2026-08-06' }),
+      closed({ ticker: 'CCC', realizedPl: 1, sameEtDay: true, openEtDate: '2026-08-10', closeEtDate: '2026-08-10' }),
+      closed({ ticker: 'DDD', realizedPl: 1, sameEtDay: false }),
+    ]);
+    expect(b.sameDayByDate).toEqual([
+      { etDate: '2026-08-06', count: 2 },
+      { etDate: '2026-08-10', count: 1 },
+    ]);
+  });
+
+  it('buckets hold durations', () => {
+    const b = behaviourStats([
+      closed({ ticker: 'A', realizedPl: 1, holdDays: 0 }),
+      closed({ ticker: 'B', realizedPl: 1, holdDays: 2 }),
+      closed({ ticker: 'C', realizedPl: 1, holdDays: 5 }),
+      closed({ ticker: 'D', realizedPl: 1, holdDays: 30 }),
+    ]);
+    expect(b.holdBuckets).toEqual([
+      { label: 'same day', count: 1 },
+      { label: '1-3d', count: 1 },
+      { label: '4-7d', count: 1 },
+      { label: '8d+', count: 1 },
+    ]);
+  });
+
+  it('returns empty collections for no episodes', () => {
+    const b = behaviourStats([]);
+    expect(b.reEntries).toEqual([]);
+    expect(b.sameDayByDate).toEqual([]);
+    expect(b.holdBuckets.every((x) => x.count === 0)).toBe(true);
   });
 });
