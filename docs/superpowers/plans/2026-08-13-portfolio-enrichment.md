@@ -115,9 +115,12 @@ describe('buildEpisodes', () => {
       buy('AAA', 5, 120, '2026-08-06T14:00:00Z'),
     ]);
     expect(episodes).toHaveLength(2);
-    expect(episodes[0].isOpen).toBe(false);
-    expect(episodes[1].isOpen).toBe(true);
-    expect(episodes[1].index).toBe(1);
+    // Episodes come back NEWEST FIRST, which is how the History tab renders them.
+    // `index` stays chronological per ticker, so the newer episode is index 1.
+    expect(episodes[0].isOpen).toBe(true);
+    expect(episodes[0].index).toBe(1);
+    expect(episodes[1].isOpen).toBe(false);
+    expect(episodes[1].index).toBe(0);
   });
 
   it('reports an OPEN episode as realizedPl null, never zero', () => {
