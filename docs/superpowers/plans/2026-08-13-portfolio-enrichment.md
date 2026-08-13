@@ -694,8 +694,20 @@ print('summary   :', d['summary'])
 "
 ```
 
-Expected, verified against production on 2026-08-13:
-- **600 episodes total, 6 open** — the open count MUST equal the live broker positions (CAVA, CSCO, LITE, ONDS, SMCI, SNDK). A different number means the walk is wrong; stop and investigate rather than adjusting the expectation.
+Expected:
+- **The open-episode count MUST equal the number of live broker positions.** That
+  equality is the invariant — not any fixed number. The bot trades every 30 minutes
+  during market hours, so the absolute totals drift while you work: a snapshot at 17:00
+  ET on 2026-08-13 gave 600 episodes / 6 open, and a run two hours later legitimately
+  gave 601 / 7 after the bot bought NVDA.
+- Check the equality against the broker, not against a number in this plan:
+
+```bash
+curl -sS "http://localhost:5202/api/alpaca?type=positions" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))"
+```
+
+- If the counts DISAGREE, stop and investigate — do not adjust the expectation and do
+  not change the pure module to force a number.
 - `anomalies` empty — no ticker has ever sold more than it bought.
 
 Kill the dev server when done: `pkill -f "port 5202"`.
