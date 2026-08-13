@@ -78,3 +78,46 @@ export function baseline(
   if (inWindow.length === 0) return null;
   return inWindow.reduce((sum, s) => sum + s.mentions, 0) / inWindow.length;
 }
+
+/**
+ * Whether two snapshots were built from the same set of sources.
+ *
+ * If ApeWisdom is down for one run, affected tickers' mention counts collapse toward
+ * zero. Compared naively that reads -100%, then +infinity on recovery. Every source
+ * outage would manufacture a fake breakout -- and Phase 4 would trade it.
+ *
+ * This is stricter than computing over the intersection of the two source sets: it
+ * refuses the comparison entirely. Strictness is the right default while the signal
+ * is unvalidated; intersection-based comparison is a possible refinement once there
+ * is evidence that outages are frequent enough to be worth salvaging.
+ */
+export function sameSourceSet(a: Snapshot, b: Snapshot): boolean {
+  if (a.sourcesPresent.length !== b.sourcesPresent.length) return false;
+  const setA = new Set(a.sourcesPresent);
+  return b.sourcesPresent.every((s) => setA.has(s));
+}
+
+/**
+ * Percentage change in mentions against the snapshot one window back.
+ *
+ * Returns null -- never a number -- when the comparison cannot be trusted: no
+ * snapshot within tolerance, or a source-set mismatch. Callers must treat null as
+ * "unknown", never as zero.
+ */
+export function velocityAt(
+  series: Snapshot[],
+  now: Date,
+  windowHours: number
+): number | null {
+  const current = nearestSnapshot(series, now, toleranceMinutesFor(1));
+  if (!current) return null;
+
+  const target = new Date(now.getTime() - windowHours * HOUR_MS);
+  const past = nearestSnapshot(series, target, toleranceMinutesFor(windowHours));
+  if (!past) return null;
+
+  if (!sameSourceSet(current, past)) return null;
+
+  const denominator = Math.max(past.mentions, MIN_BASELINE);
+  return ((current.mentions - past.mentions) / denominator) * 100;
+}

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   nearestSnapshot, toleranceMinutesFor, baseline,
+  sameSourceSet, velocityAt,
   type Snapshot,
 } from './attention-velocity';
 
@@ -65,5 +66,67 @@ describe('baseline', () => {
   it('returns null when no samples remain after exclusion', () => {
     const series = [snap('2026-08-13T11:45:00Z', 1000)];
     expect(baseline(series, new Date('2026-08-13T12:00:00Z'), 7)).toBeNull();
+  });
+});
+
+describe('sameSourceSet', () => {
+  it('is true for the same sources in any order', () => {
+    expect(sameSourceSet(
+      snap('2026-08-13T10:00:00Z', 10, ['apewisdom-all', 'stocktwits']),
+      snap('2026-08-13T11:00:00Z', 20, ['stocktwits', 'apewisdom-all'])
+    )).toBe(true);
+  });
+
+  it('is false when one side lost a source', () => {
+    expect(sameSourceSet(
+      snap('2026-08-13T10:00:00Z', 10, ['apewisdom-all', 'stocktwits']),
+      snap('2026-08-13T11:00:00Z', 20, ['stocktwits'])
+    )).toBe(false);
+  });
+});
+
+describe('velocityAt', () => {
+  it('computes percentage change against the snapshot one window back', () => {
+    const series = [
+      snap('2026-08-12T12:00:00Z', 30),
+      snap('2026-08-13T12:00:00Z', 180),
+    ];
+    // (180 - 30) / 30 * 100 = 500
+    expect(velocityAt(series, new Date('2026-08-13T12:00:00Z'), 24)).toBe(500);
+  });
+
+  it('REFUSES to compare across a source outage', () => {
+    // ApeWisdom down at the later reading: mentions collapse from 200 to 5. Compared
+    // naively this reads -97.5%, and +infinity on recovery -- every outage would
+    // manufacture a fake breakout that Phase 4 would trade.
+    const series = [
+      snap('2026-08-12T12:00:00Z', 200, ['apewisdom-all', 'stocktwits']),
+      snap('2026-08-13T12:00:00Z', 5, ['stocktwits']),
+    ];
+    expect(velocityAt(series, new Date('2026-08-13T12:00:00Z'), 24)).toBeNull();
+  });
+
+  it('floors the denominator so a near-zero prior value cannot explode', () => {
+    const series = [
+      snap('2026-08-12T12:00:00Z', 1),
+      snap('2026-08-13T12:00:00Z', 100),
+    ];
+    // Denominator floored at MIN_BASELINE=5, so (100-1)/5*100 = 1980, not 9900.
+    expect(velocityAt(series, new Date('2026-08-13T12:00:00Z'), 24)).toBe(1980);
+  });
+
+  it('returns null when there is no snapshot within tolerance', () => {
+    const series = [snap('2026-08-13T12:00:00Z', 100)];
+    expect(velocityAt(series, new Date('2026-08-13T12:00:00Z'), 24)).toBeNull();
+  });
+
+  it('handles a 24h window across a DST boundary using absolute time', () => {
+    // 2026-11-01 is the US DST fall-back. Using absolute ms rather than calendar
+    // arithmetic means the window is exactly 24h regardless.
+    const series = [
+      snap('2026-10-31T16:00:00Z', 50),
+      snap('2026-11-01T16:00:00Z', 100),
+    ];
+    expect(velocityAt(series, new Date('2026-11-01T16:00:00Z'), 24)).toBe(100);
   });
 });
