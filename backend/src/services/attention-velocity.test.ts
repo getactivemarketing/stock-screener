@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   nearestSnapshot, toleranceMinutesFor, baseline,
   sameSourceSet, velocityAt,
+  acceleration, computeVelocity,
   type Snapshot,
 } from './attention-velocity';
 
@@ -128,5 +129,81 @@ describe('velocityAt', () => {
       snap('2026-11-01T16:00:00Z', 100),
     ];
     expect(velocityAt(series, new Date('2026-11-01T16:00:00Z'), 24)).toBe(100);
+  });
+});
+
+/** 7 days of half-hourly snapshots at a flat level, for baseline/sample-count setup. */
+function flatSeries(level: number, endIso: string, hours = 24 * 7): Snapshot[] {
+  const end = new Date(endIso).getTime();
+  const out: Snapshot[] = [];
+  for (let h = hours; h >= 0; h -= 0.5) {
+    out.push({
+      capturedAt: new Date(end - h * 3_600_000),
+      mentions: level,
+      sourcesPresent: ['apewisdom-all'],
+    });
+  }
+  return out;
+}
+
+describe('acceleration', () => {
+  it('is positive when 1h velocity is increasing', () => {
+    const now = new Date('2026-08-13T12:00:00Z');
+    const series = [
+      snap('2026-08-13T10:00:00Z', 100),
+      snap('2026-08-13T11:00:00Z', 110), // prior 1h velocity: +10%
+      snap('2026-08-13T12:00:00Z', 143), // current 1h velocity: +30%
+    ];
+    expect(acceleration(series, now)).toBeCloseTo(20, 1); // 30 - 10 percentage points
+  });
+
+  it('is null when either 1h velocity is unavailable', () => {
+    const series = [snap('2026-08-13T12:00:00Z', 100)];
+    expect(acceleration(series, new Date('2026-08-13T12:00:00Z'))).toBeNull();
+  });
+});
+
+describe('computeVelocity reliability', () => {
+  const now = new Date('2026-08-13T12:00:00Z');
+
+  it('marks 1 -> 6 mentions UNRELIABLE even though it is +500%', () => {
+    // The small-number trap. 1 -> 6 and 30 -> 180 are both "+500%"; the first is noise.
+    // Without the floor, noise ranks top of the radar every single run.
+    const series = [...flatSeries(1, '2026-08-13T11:00:00Z'), snap('2026-08-13T12:00:00Z', 6)];
+    const m = computeVelocity(series, now);
+    expect(m.isReliable).toBe(false);
+  });
+
+  it('marks 30 -> 180 mentions RELIABLE', () => {
+    const series = [...flatSeries(30, '2026-08-13T11:00:00Z'), snap('2026-08-13T12:00:00Z', 180)];
+    const m = computeVelocity(series, now);
+    expect(m.isReliable).toBe(true);
+    expect(m.mentionsNow).toBe(180);
+  });
+
+  it('is unreliable with too few samples even at a healthy mention count', () => {
+    const series = [
+      snap('2026-08-13T11:00:00Z', 100),
+      snap('2026-08-13T12:00:00Z', 300),
+    ];
+    expect(computeVelocity(series, now).sampleCount).toBeLessThan(6);
+    expect(computeVelocity(series, now).isReliable).toBe(false);
+  });
+
+  it('returns an all-null, unreliable result for an empty series without throwing', () => {
+    const m = computeVelocity([], now);
+    expect(m.isReliable).toBe(false);
+    expect(m.vel24h).toBeNull();
+    expect(m.sampleCount).toBe(0);
+    expect(m.mentionsNow).toBe(0);
+  });
+
+  it('handles an all-zero series without dividing by zero', () => {
+    // A ticker present in the feed but with no mentions at all. The MIN_BASELINE
+    // floor in velocityAt is what keeps this finite rather than NaN or Infinity.
+    const m = computeVelocity(flatSeries(0, '2026-08-13T12:00:00Z'), now);
+    expect(m.isReliable).toBe(false);
+    expect(m.vel24h).toBe(0);
+    expect(Number.isNaN(m.vel24h)).toBe(false);
   });
 });

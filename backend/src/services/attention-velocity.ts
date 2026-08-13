@@ -121,3 +121,64 @@ export function velocityAt(
   const denominator = Math.max(past.mentions, MIN_BASELINE);
   return ((current.mentions - past.mentions) / denominator) * 100;
 }
+
+export interface VelocityMetrics {
+  mentionsNow: number;
+  vel1h: number | null;
+  vel6h: number | null;
+  vel24h: number | null;
+  vel7d: number | null;
+  acceleration: number | null;
+  baselineMentions: number | null;
+  sampleCount: number;
+  isReliable: boolean;
+}
+
+/**
+ * Change in the 1h velocity itself, in percentage points: how fast the rate of
+ * attention growth is itself growing. Null if either endpoint is unavailable.
+ */
+export function acceleration(series: Snapshot[], now: Date): number | null {
+  const current = velocityAt(series, now, 1);
+  const previous = velocityAt(series, new Date(now.getTime() - HOUR_MS), 1);
+  if (current === null || previous === null) return null;
+  return current - previous;
+}
+
+/**
+ * All velocity metrics for one ticker.
+ *
+ * `isReliable` is the gate every consumer must respect. Percentage change without an
+ * absolute floor is a noise generator: 1 -> 6 is "+500%" and so is 30 -> 180. Under
+ * the shipped defaults the first is unreliable and the second is not, which is the
+ * intended boundary.
+ */
+export function computeVelocity(series: Snapshot[], now: Date): VelocityMetrics {
+  const current = nearestSnapshot(series, now, toleranceMinutesFor(1));
+  const mentionsNow = current?.mentions ?? 0;
+
+  const windowStart = now.getTime() - BASELINE_DAYS * 24 * HOUR_MS;
+  const sampleCount = series.filter(
+    (s) => s.capturedAt.getTime() >= windowStart && s.capturedAt.getTime() <= now.getTime()
+  ).length;
+
+  const baselineMentions = baseline(series, now);
+
+  const isReliable =
+    mentionsNow >= MIN_MENTIONS_NOW &&
+    baselineMentions !== null &&
+    baselineMentions >= MIN_BASELINE &&
+    sampleCount >= MIN_SAMPLES;
+
+  return {
+    mentionsNow,
+    vel1h: velocityAt(series, now, 1),
+    vel6h: velocityAt(series, now, 6),
+    vel24h: velocityAt(series, now, 24),
+    vel7d: velocityAt(series, now, 24 * 7),
+    acceleration: acceleration(series, now),
+    baselineMentions,
+    sampleCount,
+    isReliable,
+  };
+}
