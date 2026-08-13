@@ -22,6 +22,7 @@
  */
 
 import 'dotenv/config';
+import { pathToFileURL } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import db from './db/index.js';
 import apewisdom from './services/apewisdom.js';
@@ -930,17 +931,27 @@ async function saveResults(rows: SaveRow[]): Promise<void> {
 }
 
 // Entry point — with global timeout safety net (15 min)
-const PIPELINE_TIMEOUT_MS = 15 * 60 * 1000;
-const globalTimeout = setTimeout(() => {
-  console.error(`[TIMEOUT] Pipeline exceeded ${PIPELINE_TIMEOUT_MS / 60000} minutes — force exiting`);
-  process.exit(1);
-}, PIPELINE_TIMEOUT_MS);
+//
+// Guarded so this module is side-effect free when IMPORTED. attention-capture.ts
+// reuses fetchAllSentimentData/mergeSentimentByTicker from here; without the guard
+// that import would run the entire screener — market data, Perplexity, scan_results
+// writes — on every 30-minute attention capture, around the clock.
+const isEntryPoint =
+  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
-runUnifiedPipeline()
-  .catch((err) => {
-    console.error(err);
+if (isEntryPoint) {
+  const PIPELINE_TIMEOUT_MS = 15 * 60 * 1000;
+  const globalTimeout = setTimeout(() => {
+    console.error(`[TIMEOUT] Pipeline exceeded ${PIPELINE_TIMEOUT_MS / 60000} minutes — force exiting`);
     process.exit(1);
-  })
-  .finally(() => clearTimeout(globalTimeout));
+  }, PIPELINE_TIMEOUT_MS);
 
-export { runUnifiedPipeline, classifyEntryCategory, selectTopCandidates, mergeSentimentByTicker };
+  runUnifiedPipeline()
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    })
+    .finally(() => clearTimeout(globalTimeout));
+}
+
+export { runUnifiedPipeline, classifyEntryCategory, selectTopCandidates, mergeSentimentByTicker, fetchAllSentimentData };
