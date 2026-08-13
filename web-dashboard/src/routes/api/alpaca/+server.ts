@@ -62,7 +62,7 @@ export const GET: RequestHandler = async ({ url }) => {
   }
 
   if (!isConfigured()) {
-    return getDemoData(type);
+    return getDemoData(type, 'not_configured');
   }
 
   try {
@@ -72,8 +72,11 @@ export const GET: RequestHandler = async ({ url }) => {
       });
 
       if (!response.ok) {
-        console.error('Alpaca account error:', await response.text());
-        return getDemoData(type);
+        const body = await response.text();
+        console.error('Alpaca account error:', body);
+        // Keys ARE configured -- Alpaca refused them. Do not report this as
+        // missing configuration.
+        return getDemoData(type, 'auth_rejected', `HTTP ${response.status}: ${body.slice(0, 200)}`);
       }
 
       const account = await response.json();
@@ -193,7 +196,7 @@ export const GET: RequestHandler = async ({ url }) => {
     return json({ error: 'Unknown type' }, { status: 400 });
   } catch (error) {
     console.error('Alpaca API error:', error);
-    return getDemoData(type);
+    return getDemoData(type, 'unreachable', String(error).slice(0, 200));
   }
 };
 
@@ -286,7 +289,14 @@ export const DELETE: RequestHandler = async ({ url }) => {
   }
 };
 
-function getDemoData(type: string) {
+/**
+ * `reason` distinguishes the three ways this endpoint reports connected:false.
+ * Without it the portfolio page blamed missing configuration for all three,
+ * including rejected keys and Alpaca outages.
+ */
+type DisconnectReason = 'not_configured' | 'auth_rejected' | 'unreachable';
+
+function getDemoData(type: string, reason: DisconnectReason = 'not_configured', detail?: string) {
   if (type === 'account') {
     return json({
       accountId: 'demo',
@@ -299,6 +309,8 @@ function getDemoData(type: string) {
       totalPL: 0,
       totalPLPercent: 0,
       connected: false,
+      reason,
+      detail: detail ?? null,
     });
   }
 

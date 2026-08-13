@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { describeAlpacaDisconnect, type DisconnectDescription } from '$lib/alpaca-status';
 
   interface Account {
     accountId: string;
@@ -41,6 +42,7 @@
   let loading = true;
   let activeTab = 'positions';
   let connected = false;
+  let disconnect: DisconnectDescription | null = null;
 
   // Order form state
   let orderTicker = '';
@@ -108,6 +110,9 @@
         const data = await res.json();
         account = data;
         connected = data.connected !== false;
+        if (!connected) {
+          disconnect = describeAlpacaDisconnect(data.reason, data.detail ?? undefined);
+        }
       }
     } catch (e) {
       console.error('Failed to fetch account:', e);
@@ -205,13 +210,22 @@
   </div>
 {:else if !connected}
   <div class="card connect-card">
-    <h3>Connect Alpaca Account</h3>
-    <p>To use portfolio features, configure your Alpaca API credentials in Vercel environment variables:</p>
-    <ul>
-      <li><code>ALPACA_API_KEY</code></li>
-      <li><code>ALPACA_API_SECRET</code></li>
-    </ul>
-    <p class="note">Get your free API keys at <a href="https://alpaca.markets" target="_blank">alpaca.markets</a></p>
+    <h3>{disconnect?.title ?? 'Connect Alpaca Account'}</h3>
+    <p>{disconnect?.message ?? 'To use portfolio features, configure your Alpaca API credentials:'}</p>
+    {#if disconnect?.showEnvVarHelp ?? true}
+      <ul>
+        <li><code>ALPACA_API_KEY</code></li>
+        <li><code>ALPACA_API_SECRET</code></li>
+      </ul>
+      <p class="note">
+        Set these in Vercel environment variables for the deployed site, or in
+        <code>web-dashboard/.env</code> for local development.
+      </p>
+      <p class="note">Get your free API keys at <a href="https://alpaca.markets" target="_blank">alpaca.markets</a></p>
+    {/if}
+    {#if disconnect?.detail}
+      <p class="note detail">{disconnect.detail}</p>
+    {/if}
     <p class="note">Paper trading is used by default for safety.</p>
   </div>
 {:else}
@@ -523,6 +537,13 @@
 
   .note a {
     color: var(--blue);
+  }
+
+  /* Raw error text from Alpaca -- monospaced so an HTTP status stays readable. */
+  .note.detail {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem;
+    word-break: break-word;
   }
 
   .account-summary {
