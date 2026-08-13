@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { buildEpisodes, etDateString, type TradeRow } from './episodes';
 
-const buy = (ticker: string, qty: number, price: number, at: string): TradeRow => ({
+const buy = (
+  ticker: string,
+  qty: number,
+  price: number,
+  at: string,
+  classification = 'runner',
+  rationale = 'test thesis'
+): TradeRow => ({
   ticker, action: 'BUY', quantity: qty, filledPrice: price, filledAt: at,
-  classification: 'runner', rationale: 'test thesis',
+  classification, rationale,
 });
 const sell = (ticker: string, qty: number, price: number, at: string): TradeRow => ({
   ticker, action: 'SELL', quantity: qty, filledPrice: price, filledAt: at,
@@ -123,5 +130,33 @@ describe('buildEpisodes', () => {
 
   it('returns empty for no trades rather than throwing', () => {
     expect(buildEpisodes([])).toEqual({ episodes: [], anomalies: [] });
+  });
+
+  it('surfaces mid-episode oversell (sell exceeds quantity while position open)', () => {
+    // Bought 5 shares, trying to sell 10. This is a distinct anomaly path from
+    // selling with no position at all. If the `running < 0` check were missing or
+    // changed to `<= 0`, this would not be caught.
+    const { episodes, anomalies } = buildEpisodes([
+      buy('AAA', 5, 100, '2026-08-03T14:00:00Z'),
+      sell('AAA', 10, 110, '2026-08-04T14:00:00Z'),  // oversell
+    ]);
+    expect(anomalies).toHaveLength(1);
+    expect(anomalies[0]).toContain('AAA');
+    expect(episodes.filter((e) => e.ticker === 'AAA')).toHaveLength(0);
+  });
+
+  it('preserves classification/rationale from entry buy, not from later top-ups', () => {
+    // Opens with 'runner', tops up with 'value'. classificationAtEntry and
+    // rationaleAtEntry must stay frozen at the entry values. A regression that
+    // overwrites them on every buy would pass the original 12 tests unchanged
+    // (they all use identical values everywhere).
+    const { episodes } = buildEpisodes([
+      buy('AAA', 5, 100, '2026-08-03T14:00:00Z', 'runner', 'test thesis'),
+      buy('AAA', 5, 105, '2026-08-04T14:00:00Z', 'value', 'top-up'),
+      sell('AAA', 10, 110, '2026-08-05T14:00:00Z'),
+    ]);
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0].classificationAtEntry).toBe('runner');
+    expect(episodes[0].rationaleAtEntry).toBe('test thesis');
   });
 });
