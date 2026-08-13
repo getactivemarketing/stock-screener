@@ -1,4 +1,5 @@
 import { captureAttention } from './services/attention-capture.js';
+import { materializeVelocity } from './services/attention-materialize.js';
 
 /**
  * Entry point for the 24/7 attention capture cron.
@@ -11,7 +12,8 @@ async function main() {
   const started = Date.now();
   try {
     const written = await captureAttention();
-    console.log(`[AttentionRunner] Done: ${written} rows in ${Date.now() - started}ms`);
+    const velocities = await materializeVelocity();
+    console.log(`[AttentionRunner] Done: ${written} snapshots, ${velocities} velocity rows in ${Date.now() - started}ms`);
     process.exit(0);
   } catch (err) {
     console.error('[AttentionRunner] Capture FAILED -- leaving a gap rather than partial data:', err);
