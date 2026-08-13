@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { describeAlpacaDisconnect, type DisconnectDescription } from '$lib/alpaca-status';
+  import type { Episode, ClosedSummary, BehaviourStats } from '$lib/portfolio/episodes';
 
   interface Account {
     accountId: string;
@@ -93,12 +94,46 @@
     }
   }
 
+  let episodes: Episode[] = [];
+  let summary: ClosedSummary | null = null;
+  let behaviour: BehaviourStats | null = null;
+  let historyAnomalies: string[] = [];
+  let historyError = '';
+
+  async function fetchHistory() {
+    try {
+      const res = await fetch('/api/portfolio-history');
+      if (!res.ok) { historyError = 'Could not load trade history.'; return; }
+      const data = await res.json();
+      if (data.error) { historyError = data.error; return; }
+      episodes = data.episodes;
+      summary = data.summary;
+      behaviour = data.behaviour;
+      historyAnomalies = data.anomalies ?? [];
+    } catch (e) {
+      console.error('Failed to fetch portfolio history:', e);
+      historyError = 'Could not load trade history.';
+    }
+  }
+
+  /** Open episode per ticker, for entry date and days held on the positions table. */
+  $: openByTicker = new Map(episodes.filter((e) => e.isOpen).map((e) => [e.ticker, e]));
+
+  function daysSince(etDate: string): number {
+    const from = Date.parse(`${etDate}T00:00:00Z`);
+    const today = Date.parse(`${new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date())}T00:00:00Z`);
+    return Math.max(0, Math.round((today - from) / 86_400_000));
+  }
+
   onMount(async () => {
     await Promise.all([
       fetchAccount(),
       fetchPositions(),
       fetchOrders(),
       fetchAITrades(),
+      fetchHistory(),
     ]);
     loading = false;
   });
@@ -283,6 +318,9 @@
             <tr>
               <th>Ticker</th>
               <th>Qty</th>
+              <th>Entry Date</th>
+              <th>Held</th>
+              <th>Entry Class</th>
               <th>Avg Cost</th>
               <th>Last Price</th>
               <th>Market Value</th>
@@ -296,6 +334,13 @@
               <tr>
                 <td><a href="/ticker/{pos.ticker}"><strong>{pos.ticker}</strong></a></td>
                 <td>{pos.quantity}</td>
+                <td>{openByTicker.get(pos.ticker)?.openEtDate ?? '—'}</td>
+                <td>
+                  {#if openByTicker.get(pos.ticker)}
+                    {daysSince(openByTicker.get(pos.ticker)!.openEtDate)}d
+                  {:else}—{/if}
+                </td>
+                <td>{openByTicker.get(pos.ticker)?.classificationAtEntry ?? '—'}</td>
                 <td>{formatCurrency(pos.avgCost)}</td>
                 <td>{formatCurrency(pos.lastPrice)}</td>
                 <td>{formatCurrency(pos.marketValue)}</td>
