@@ -66,7 +66,7 @@ export function etDateString(iso: string): string {
 }
 
 /** Whole calendar days between two YYYY-MM-DD ET dates. */
-function calendarDaysBetween(from: string, to: string): number {
+export function calendarDaysBetween(from: string, to: string): number {
   const a = Date.parse(`${from}T00:00:00Z`);
   const b = Date.parse(`${to}T00:00:00Z`);
   if (Number.isNaN(a) || Number.isNaN(b)) return 0;
@@ -85,6 +85,13 @@ export function buildEpisodes(trades: TradeRow[]): EpisodeResult {
   const anomalies: string[] = [];
 
   for (const [ticker, rows] of byTicker) {
+    // Sorts by timestamp alone. Two trades sharing an identical filledAt keep
+    // the order the CALLER handed them in, because Array.prototype.sort has
+    // been specified STABLE since ES2019 -- this relies on the route's
+    // `ORDER BY ticker, filled_at, id` to have already put same-instant rows
+    // in true fill order (e.g. BUY before a same-millisecond SELL). A caller
+    // that hands in unordered same-timestamp rows can flip that pairing and
+    // manufacture a false "sell with no position" anomaly.
     rows.sort((a, b) => Date.parse(a.filledAt) - Date.parse(b.filledAt));
 
     let running = 0;
@@ -174,9 +181,21 @@ export interface ClosedSummary {
 }
 
 /**
+ * Half a cent. A round trip built from partial exits can land at a realizedPl
+ * of ~1e-13 instead of exactly 0 from float accumulation; without this, that
+ * shows as a "win" of $0.00. Applied ONLY to win/loss bucketing -- the summed
+ * realizedPl total is left exact.
+ */
+const FLAT_EPSILON = 0.005;
+
+/**
  * Performance over CLOSED episodes only. Open positions are excluded entirely:
  * they have no realized result, and counting one as a zero would drag the win
  * rate down with a trade that has not finished happening.
+ *
+ * winRatePct is win / (win + loss): exactly-flat episodes are neither a win
+ * nor a loss, so they are excluded from both the numerator and denominator
+ * rather than diluting the rate with a trade that did neither.
  */
 export function summarizeClosed(episodes: Episode[]): ClosedSummary {
   const done = episodes.filter((e) => !e.isOpen && e.realizedPl !== null);
@@ -184,15 +203,16 @@ export function summarizeClosed(episodes: Episode[]): ClosedSummary {
     return { count: 0, realizedPl: 0, winCount: 0, lossCount: 0, winRatePct: null, avgHoldDays: null };
   }
   const realizedPl = done.reduce((sum, e) => sum + (e.realizedPl ?? 0), 0);
-  const winCount = done.filter((e) => (e.realizedPl ?? 0) > 0).length;
-  const lossCount = done.filter((e) => (e.realizedPl ?? 0) < 0).length;
+  const winCount = done.filter((e) => (e.realizedPl ?? 0) > FLAT_EPSILON).length;
+  const lossCount = done.filter((e) => (e.realizedPl ?? 0) < -FLAT_EPSILON).length;
+  const decided = winCount + lossCount;
   const holds = done.map((e) => e.holdDays ?? 0);
   return {
     count: done.length,
     realizedPl,
     winCount,
     lossCount,
-    winRatePct: (winCount / done.length) * 100,
+    winRatePct: decided > 0 ? (winCount / decided) * 100 : null,
     avgHoldDays: holds.reduce((a, b) => a + b, 0) / holds.length,
   };
 }
@@ -241,4 +261,37 @@ export function behaviourStats(episodes: Episode[]): BehaviourStats {
   }
 
   return { reEntries, sameDayByDate, holdBuckets: buckets };
+}
+
+export interface SameDayRegression {
+  preFixCount: number;
+  postFixCount: number;
+  postFixDates: string[];
+}
+
+/**
+ * Splits same-day round-trip counts into before/after a gate fix date. This
+ * IS the regression monitor for the no_same_day_sell gate leak: hoisted out
+ * of the Behaviour tab component so it is testable.
+ *
+ * Uses STRICTLY GREATER than fixDate for post-fix -- the fix date's own rows
+ * are pre-fix, because the gate closed at 11:20 ET that day, after those
+ * trades had already happened.
+ */
+export function sameDayRegression(
+  sameDayByDate: Array<{ etDate: string; count: number }>,
+  fixDate: string
+): SameDayRegression {
+  const postFixDates: string[] = [];
+  let preFixCount = 0;
+  let postFixCount = 0;
+  for (const d of sameDayByDate) {
+    if (d.etDate > fixDate) {
+      postFixCount += d.count;
+      postFixDates.push(d.etDate);
+    } else {
+      preFixCount += d.count;
+    }
+  }
+  return { preFixCount, postFixCount, postFixDates };
 }

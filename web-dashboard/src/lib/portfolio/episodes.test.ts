@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildEpisodes, etDateString, summarizeClosed, behaviourStats, type TradeRow, type Episode } from './episodes';
+import {
+  buildEpisodes, etDateString, summarizeClosed, behaviourStats, calendarDaysBetween,
+  sameDayRegression, type TradeRow, type Episode,
+} from './episodes';
 
 const buy = (
   ticker: string,
@@ -145,6 +148,22 @@ describe('buildEpisodes', () => {
     expect(episodes.filter((e) => e.ticker === 'AAA')).toHaveLength(0);
   });
 
+  it('relies on caller pre-ordering for trades sharing an identical timestamp', () => {
+    // Same filledAt for both rows. buildEpisodes sorts by timestamp alone, so
+    // ties keep the CALLER's order (Array.prototype.sort is stable since
+    // ES2019) -- the route supplies BUY-before-SELL via its own ORDER BY.
+    // If a SELL landed ahead of its BUY here, it would be read as a sell
+    // against no position and delete the ticker's whole history.
+    const { episodes, anomalies } = buildEpisodes([
+      buy('AAA', 10, 100, '2026-08-03T14:00:00Z'),
+      sell('AAA', 10, 110, '2026-08-03T14:00:00Z'),
+    ]);
+    expect(anomalies).toHaveLength(0);
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0].isOpen).toBe(false);
+    expect(episodes[0].realizedPl).toBe(100);
+  });
+
   it('preserves classification/rationale from entry buy, not from later top-ups', () => {
     // Opens with 'runner', tops up with 'value'. classificationAtEntry and
     // rationaleAtEntry must stay frozen at the entry values. A regression that
@@ -191,7 +210,38 @@ describe('summarizeClosed', () => {
     expect(s.realizedPl).toBe(120);
     expect(s.winCount).toBe(2);
     expect(s.lossCount).toBe(1);
+    // winRatePct is win / (win + loss), not win / count.
     expect(s.winRatePct).toBeCloseTo(66.667, 2);
+  });
+
+  it('excludes an exactly-flat episode from wins, losses, AND the rate denominator', () => {
+    // A flat trade is neither a win nor a loss. If it fell into `count` as the
+    // rate denominator while landing in neither bucket, the displayed rate
+    // would disagree with what a reader computes from the (W/L) caption --
+    // this was observed in prod: 594 closed, 592 W+L, 50.7% shown vs 50.8%
+    // implied by the caption.
+    const s = summarizeClosed([
+      closed({ ticker: 'AAA', realizedPl: 100 }),
+      closed({ ticker: 'BBB', realizedPl: -100 }),
+      closed({ ticker: 'CCC', realizedPl: 0 }),
+    ]);
+    expect(s.count).toBe(3);
+    expect(s.winCount).toBe(1);
+    expect(s.lossCount).toBe(1);
+    expect(s.winRatePct).toBeCloseTo(50, 6);
+  });
+
+  it('treats a ~1e-13 float residual as flat, not a win', () => {
+    // A round trip built from partial exits can land at a realizedPl of
+    // ~1e-13 instead of exactly 0 due to float accumulation. Without an
+    // epsilon this buckets as a "win" that displays as $0.00.
+    const s = summarizeClosed([closed({ ticker: 'AAA', realizedPl: 1e-13 })]);
+    expect(s.winCount).toBe(0);
+    expect(s.lossCount).toBe(0);
+    expect(s.winRatePct).toBeNull();
+    // The summed total itself stays exact -- the epsilon applies only to
+    // win/loss bucketing, never to the reported realizedPl total.
+    expect(s.realizedPl).toBe(1e-13);
   });
 
   it('EXCLUDES open episodes from every figure', () => {
@@ -264,5 +314,41 @@ describe('behaviourStats', () => {
     expect(b.reEntries).toEqual([]);
     expect(b.sameDayByDate).toEqual([]);
     expect(b.holdBuckets.every((x) => x.count === 0)).toBe(true);
+  });
+});
+
+describe('calendarDaysBetween', () => {
+  it('counts whole calendar days between two ET dates', () => {
+    expect(calendarDaysBetween('2026-08-03', '2026-08-05')).toBe(2);
+  });
+
+  it('returns 0 for the same date', () => {
+    expect(calendarDaysBetween('2026-08-03', '2026-08-03')).toBe(0);
+  });
+});
+
+describe('sameDayRegression', () => {
+  const FIX = '2026-08-10';
+
+  it('counts a date after the fix date as post-fix', () => {
+    const r = sameDayRegression([{ etDate: '2026-08-11', count: 2 }], FIX);
+    expect(r.preFixCount).toBe(0);
+    expect(r.postFixCount).toBe(2);
+    expect(r.postFixDates).toEqual(['2026-08-11']);
+  });
+
+  it('counts the fix date ITSELF as pre-fix', () => {
+    // The gate closed at 11:20 ET that day, after those trades already
+    // happened -- the fix date's own rows are the last of the pre-fix era,
+    // not the first of the post-fix one.
+    const r = sameDayRegression([{ etDate: FIX, count: 3 }], FIX);
+    expect(r.preFixCount).toBe(3);
+    expect(r.postFixCount).toBe(0);
+    expect(r.postFixDates).toEqual([]);
+  });
+
+  it('yields zeros for an empty array', () => {
+    const r = sameDayRegression([], FIX);
+    expect(r).toEqual({ preFixCount: 0, postFixCount: 0, postFixDates: [] });
   });
 });

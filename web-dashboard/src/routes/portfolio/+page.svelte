@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { describeAlpacaDisconnect, type DisconnectDescription } from '$lib/alpaca-status';
-  import type { Episode, ClosedSummary, BehaviourStats } from '$lib/portfolio/episodes';
+  import {
+    calendarDaysBetween, etDateString, sameDayRegression,
+    type Episode, type ClosedSummary, type BehaviourStats,
+  } from '$lib/portfolio/episodes';
 
   interface Account {
     accountId: string;
@@ -105,20 +108,23 @@
 
   /** Same-day rows newest first, so a fresh regression lands at the top instead of the bottom. */
   $: sameDayNewestFirst = behaviour ? [...behaviour.sameDayByDate].reverse() : [];
-  $: postFixSameDay = behaviour
-    ? behaviour.sameDayByDate.filter((d) => d.etDate > SAME_DAY_FIX_DATE)
-    : [];
-  $: postFixCount = postFixSameDay.reduce((sum, d) => sum + d.count, 0);
-  $: preFixCount = behaviour
-    ? behaviour.sameDayByDate.reduce((sum, d) => sum + d.count, 0) - postFixCount
-    : 0;
+  /** The regression verdict itself -- hoisted into episodes.ts so it is testable. */
+  $: regression = behaviour
+    ? sameDayRegression(behaviour.sameDayByDate, SAME_DAY_FIX_DATE)
+    : { preFixCount: 0, postFixCount: 0, postFixDates: [] };
 
   async function fetchHistory() {
     try {
       const res = await fetch('/api/portfolio-history');
-      if (!res.ok) { historyError = 'Could not load trade history.'; return; }
-      const data = await res.json();
-      if (data.error) { historyError = data.error; return; }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        // Surface the server's own message when it sent one (e.g. the 500
+        // payload's `error` field) instead of only ever showing the generic
+        // fallback.
+        historyError = data?.error || 'Could not load trade history.';
+        return;
+      }
+      if (data?.error) { historyError = data.error; return; }
       episodes = data.episodes;
       summary = data.summary;
       behaviour = data.behaviour;
@@ -131,13 +137,16 @@
 
   /** Open episode per ticker, for entry date and days held on the positions table. */
   $: openByTicker = new Map(episodes.filter((e) => e.isOpen).map((e) => [e.ticker, e]));
+  /**
+   * The correctness check the plan called out as THE invariant: open
+   * episodes should equal live broker positions. This tab only renders once
+   * `loading` is false, by which point both positions and episodes have
+   * settled, so no extra gating is needed here.
+   */
+  $: positionsMismatch = positions.length !== openByTicker.size;
 
   function daysSince(etDate: string): number {
-    const from = Date.parse(`${etDate}T00:00:00Z`);
-    const today = Date.parse(`${new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(new Date())}T00:00:00Z`);
-    return Math.max(0, Math.round((today - from) / 86_400_000));
+    return calendarDaysBetween(etDate, etDateString(new Date().toISOString()));
   }
 
   onMount(async () => {
@@ -331,6 +340,12 @@
   <!-- Positions Tab -->
   {#if activeTab === 'positions'}
     <div class="card">
+      {#if positionsMismatch}
+        <p class="note status-alert">
+          Ledger disagrees with broker: {positions.length} broker position{positions.length === 1 ? '' : 's'}
+          vs {openByTicker.size} open episode{openByTicker.size === 1 ? '' : 's'}.
+        </p>
+      {/if}
       {#if positions.length > 0}
         <table class="data-table">
           <thead>
@@ -562,56 +577,63 @@
     <div class="card">
       {#if historyError}
         <p class="note">{historyError}</p>
-      {:else if summary && summary.count > 0}
-        <div class="stats-grid">
-          <div class="card stat-card">
-            <div class="stat-value">{formatCurrency(summary.realizedPl)}</div>
-            <div class="stat-label">REALIZED P/L (GROSS)</div>
-          </div>
-          <div class="card stat-card">
-            <div class="stat-value">{summary.winRatePct?.toFixed(1) ?? '—'}%</div>
-            <div class="stat-label">WIN RATE ({summary.winCount}W / {summary.lossCount}L)</div>
-          </div>
-          <div class="card stat-card">
-            <div class="stat-value">{summary.avgHoldDays?.toFixed(1) ?? '—'}d</div>
-            <div class="stat-label">AVG HOLD</div>
-          </div>
-          <div class="card stat-card">
-            <div class="stat-value">{summary.count}</div>
-            <div class="stat-label">ROUND TRIPS</div>
-          </div>
-        </div>
-        <p class="note">
-          Realized P/L is gross — the trades table records no commissions, and this is a
-          paper account.
-        </p>
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Ticker</th><th>In</th><th>Out</th><th>Held</th>
-              <th>Qty</th><th>Cost</th><th>Proceeds</th><th>Realized</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each episodes.filter((e) => !e.isOpen) as ep}
-              <tr>
-                <td><a href="/ticker/{ep.ticker}"><strong>{ep.ticker}</strong></a></td>
-                <td>{ep.openEtDate}</td>
-                <td>{ep.closeEtDate}</td>
-                <td>{ep.holdDays}d{#if ep.sameEtDay} <span class="note">same day</span>{/if}</td>
-                <td>{ep.peakQuantity}</td>
-                <td>{formatCurrency(ep.totalCost)}</td>
-                <td>{formatCurrency(ep.totalProceeds)}</td>
-                <td class={(ep.realizedPl ?? 0) >= 0 ? 'positive' : 'negative'}>
-                  {formatCurrency(ep.realizedPl ?? 0)}
-                  ({formatPercent(ep.realizedPlPct ?? 0)})
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
       {:else}
-        <p class="note">No closed round trips yet.</p>
+        {#if historyAnomalies.length > 0}
+          <p class="note detail">
+            Ledger anomalies (totals below EXCLUDE these tickers): {historyAnomalies.join('; ')}
+          </p>
+        {/if}
+        {#if summary && summary.count > 0}
+          <div class="stats-grid">
+            <div class="card stat-card">
+              <div class="stat-value">{formatCurrency(summary.realizedPl)}</div>
+              <div class="stat-label">REALIZED P/L (GROSS)</div>
+            </div>
+            <div class="card stat-card">
+              <div class="stat-value">{summary.winRatePct?.toFixed(1) ?? '—'}%</div>
+              <div class="stat-label">WIN RATE ({summary.winCount}W / {summary.lossCount}L)</div>
+            </div>
+            <div class="card stat-card">
+              <div class="stat-value">{summary.avgHoldDays?.toFixed(1) ?? '—'}d</div>
+              <div class="stat-label">AVG HOLD</div>
+            </div>
+            <div class="card stat-card">
+              <div class="stat-value">{summary.count}</div>
+              <div class="stat-label">ROUND TRIPS</div>
+            </div>
+          </div>
+          <p class="note">
+            Realized P/L is gross — the trades table records no commissions, and this is a
+            paper account.
+          </p>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Ticker</th><th>In</th><th>Out</th><th>Held</th>
+                <th>Qty</th><th>Cost</th><th>Proceeds</th><th>Realized</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each episodes.filter((e) => !e.isOpen) as ep}
+                <tr>
+                  <td><a href="/ticker/{ep.ticker}"><strong>{ep.ticker}</strong></a></td>
+                  <td>{ep.openEtDate}</td>
+                  <td>{ep.closeEtDate}</td>
+                  <td>{ep.holdDays}d{#if ep.sameEtDay} <span class="note">same day</span>{/if}</td>
+                  <td>{ep.peakQuantity}</td>
+                  <td>{formatCurrency(ep.totalCost)}</td>
+                  <td>{formatCurrency(ep.totalProceeds)}</td>
+                  <td class={(ep.realizedPl ?? 0) >= 0 ? 'positive' : 'negative'}>
+                    {formatCurrency(ep.realizedPl ?? 0)}
+                    ({ep.realizedPlPct === null ? '—' : formatPercent(ep.realizedPlPct)})
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="note">No closed round trips yet.</p>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -619,65 +641,71 @@
   <!-- Behaviour Tab -->
   {#if activeTab === 'behaviour'}
     <div class="card">
-      {#if historyAnomalies.length > 0}
-        <p class="note detail">Ledger anomalies: {historyAnomalies.join('; ')}</p>
-      {/if}
-      {#if behaviour}
-        <h3>Same-day round trips</h3>
-        <p class="note">
-          A position opened and closed on the same ET date. The no_same_day_sell gate was
-          made to work over three fixes ending {SAME_DAY_FIX_DATE}; entries on or before that
-          date are the pre-fix era.
-        </p>
-        {#if postFixCount === 0}
-          <p class="note positive">
-            No same-day round trips since the {SAME_DAY_FIX_DATE} gate fix ({preFixCount} before it).
-          </p>
-        {:else}
-          <p class="note negative">
-            REGRESSION: {postFixCount} same-day round trip{postFixCount === 1 ? '' : 's'} since
-            the {SAME_DAY_FIX_DATE} gate fix.
-          </p>
-        {/if}
-        <table class="data-table">
-          <thead><tr><th>ET Date</th><th>Count</th><th></th></tr></thead>
-          <tbody>
-            {#each sameDayNewestFirst as d}
-              <tr>
-                <td>{d.etDate}</td>
-                <td>{d.count}</td>
-                <td class={d.etDate > SAME_DAY_FIX_DATE ? 'negative' : ''}>
-                  {d.etDate > SAME_DAY_FIX_DATE ? 'AFTER FIX' : 'pre-fix'}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-
-        <h3>Most re-entered</h3>
-        <table class="data-table">
-          <thead><tr><th>Ticker</th><th>Episodes</th></tr></thead>
-          <tbody>
-            {#each behaviour.reEntries.slice(0, 15) as r}
-              <tr>
-                <td><a href="/ticker/{r.ticker}"><strong>{r.ticker}</strong></a></td>
-                <td>{r.episodes}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-
-        <h3>Hold duration</h3>
-        <table class="data-table">
-          <thead><tr><th>Bucket</th><th>Count</th></tr></thead>
-          <tbody>
-            {#each behaviour.holdBuckets as b}
-              <tr><td>{b.label}</td><td>{b.count}</td></tr>
-            {/each}
-          </tbody>
-        </table>
+      {#if historyError}
+        <!-- A failed fetch must never read as "no same-day round trips" -- that
+             would be a false all-clear on the regression monitor. -->
+        <p class="note status-alert">{historyError}</p>
       {:else}
-        <p class="note">No trade history yet.</p>
+        {#if historyAnomalies.length > 0}
+          <p class="note detail">Ledger anomalies: {historyAnomalies.join('; ')}</p>
+        {/if}
+        {#if behaviour}
+          <h3>Same-day round trips</h3>
+          <p class="note">
+            A position opened and closed on the same ET date. The no_same_day_sell gate was
+            made to work over three fixes ending {SAME_DAY_FIX_DATE}; entries on or before that
+            date are the pre-fix era.
+          </p>
+          {#if regression.postFixCount === 0}
+            <p class="note status-ok">
+              No same-day round trips since the {SAME_DAY_FIX_DATE} gate fix ({regression.preFixCount} before it).
+            </p>
+          {:else}
+            <p class="note status-alert">
+              REGRESSION: {regression.postFixCount} same-day round trip{regression.postFixCount === 1 ? '' : 's'} since
+              the {SAME_DAY_FIX_DATE} gate fix.
+            </p>
+          {/if}
+          <table class="data-table">
+            <thead><tr><th>ET Date</th><th>Count</th><th></th></tr></thead>
+            <tbody>
+              {#each sameDayNewestFirst as d}
+                <tr>
+                  <td>{d.etDate}</td>
+                  <td>{d.count}</td>
+                  <td class={regression.postFixDates.includes(d.etDate) ? 'negative' : ''}>
+                    {regression.postFixDates.includes(d.etDate) ? 'AFTER FIX' : 'pre-fix'}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+
+          <h3>Most re-entered</h3>
+          <table class="data-table">
+            <thead><tr><th>Ticker</th><th>Episodes</th></tr></thead>
+            <tbody>
+              {#each behaviour.reEntries.slice(0, 15) as r}
+                <tr>
+                  <td><a href="/ticker/{r.ticker}"><strong>{r.ticker}</strong></a></td>
+                  <td>{r.episodes}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+
+          <h3>Hold duration</h3>
+          <table class="data-table">
+            <thead><tr><th>Bucket</th><th>Count</th></tr></thead>
+            <tbody>
+              {#each behaviour.holdBuckets as b}
+                <tr><td>{b.label}</td><td>{b.count}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="note">No trade history yet.</p>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -733,6 +761,23 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.8rem;
     word-break: break-word;
+  }
+
+  /*
+   * Scoped colour classes for pass/fail status lines (regression monitor,
+   * ledger-vs-broker reconciliation). NOT the global .positive/.negative --
+   * this component's scoped `.note` rule (specificity 0-2-0, since it
+   * compiles to `.note.svelte-hash`) beats the global `.positive`/`.negative`
+   * (0-1-0) in app.css, so relying on those renders both states identical
+   * grey. Defined here instead so they always win.
+   */
+  .status-ok {
+    color: var(--green);
+  }
+
+  .status-alert {
+    color: var(--red);
+    font-weight: 600;
   }
 
   .account-summary {

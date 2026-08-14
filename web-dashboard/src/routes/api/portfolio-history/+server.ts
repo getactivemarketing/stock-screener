@@ -28,6 +28,10 @@ export const GET: RequestHandler = async () => {
         ORDER BY ticker, COALESCE(filled_at, created_at), id`
     );
 
+    // Counted but NOT included: a null-price fill would invent a cost basis
+    // out of nothing, so it is skipped -- loudly, via the anomaly below.
+    const nullPriceCount = rows.filter((r) => r.filled_price === null).length;
+
     const trades: TradeRow[] = rows
       // A fill with no price cannot contribute a cost basis; skip rather than
       // treat it as free shares, which would invent profit.
@@ -42,13 +46,32 @@ export const GET: RequestHandler = async () => {
         rationale: r.trade_rationale,
       }));
 
+    // Partial-status trades never enter the ledger (only 'filled' does), but
+    // a dropped partial can leave an episode stuck open, so count them too.
+    const partialRows = await query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM trades WHERE status = 'partial'`
+    );
+    const partialCount = Number(partialRows[0]?.count ?? 0);
+
     const { episodes, anomalies } = buildEpisodes(trades);
+
+    const routeAnomalies = [...anomalies];
+    if (nullPriceCount > 0) {
+      routeAnomalies.push(
+        `${nullPriceCount} filled trade${nullPriceCount === 1 ? '' : 's'} skipped: null filled_price`
+      );
+    }
+    if (partialCount > 0) {
+      routeAnomalies.push(
+        `${partialCount} partial-status trade${partialCount === 1 ? '' : 's'} excluded from the ledger`
+      );
+    }
 
     return json({
       episodes,
       summary: summarizeClosed(episodes),
       behaviour: behaviourStats(episodes),
-      anomalies,
+      anomalies: routeAnomalies,
     });
   } catch (error) {
     console.error('portfolio-history error:', error);
