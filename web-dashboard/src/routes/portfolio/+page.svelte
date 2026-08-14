@@ -139,11 +139,12 @@
   $: openByTicker = new Map(episodes.filter((e) => e.isOpen).map((e) => [e.ticker, e]));
   /**
    * The correctness check the plan called out as THE invariant: open
-   * episodes should equal live broker positions. This tab only renders once
-   * `loading` is false, by which point both positions and episodes have
-   * settled, so no extra gating is needed here.
+   * episodes should equal live broker positions. Gated on !historyError --
+   * when the history fetch fails, episodes stays [] and openByTicker.size
+   * is 0, which would otherwise read as a ledger-vs-broker disagreement
+   * when it's really just a failed network call.
    */
-  $: positionsMismatch = positions.length !== openByTicker.size;
+  $: positionsMismatch = !historyError && positions.length !== openByTicker.size;
 
   function daysSince(etDate: string): number {
     return calendarDaysBetween(etDate, etDateString(new Date().toISOString()));
@@ -340,6 +341,12 @@
   <!-- Positions Tab -->
   {#if activeTab === 'positions'}
     <div class="card">
+      {#if historyError}
+        <!-- A failed fetch must never read as a ledger-vs-broker disagreement --
+             that would present a network failure as a data-integrity claim
+             about the trading ledger. -->
+        <p class="note status-alert">{historyError}</p>
+      {/if}
       {#if positionsMismatch}
         <p class="note status-alert">
           Ledger disagrees with broker: {positions.length} broker position{positions.length === 1 ? '' : 's'}
