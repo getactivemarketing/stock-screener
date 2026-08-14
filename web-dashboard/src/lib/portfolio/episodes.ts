@@ -295,3 +295,56 @@ export function sameDayRegression(
   }
   return { preFixCount, postFixCount, postFixDates };
 }
+
+export interface BrokerReconciliation {
+  /** Held at the broker but unexplained by the ledger. */
+  brokerOnly: string[];
+  /** Open in the ledger but not held at the broker. */
+  ledgerOnly: string[];
+  /** Broker-only tickers explained by a BUY still awaiting fill reconciliation. */
+  awaitingFill: string[];
+  /** True only when a difference is NOT explained by a pending fill. */
+  disagrees: boolean;
+}
+
+/**
+ * Compare what the broker says we hold against what the ledger can account for.
+ *
+ * A ticker whose BUY is still `status='pending'` is EXEMPT in the broker-only
+ * direction. The bot buys roughly every 30 minutes and writes a pending row
+ * until the next cycle reconciles the fill, so without the exemption this
+ * warning fires several times a day. A monitor that cries wolf gets tuned out --
+ * which is precisely how the same-day-sell gate stayed invisible for five weeks.
+ *
+ * The exemption is deliberately one-directional. A pending BUY can explain
+ * "the broker has it and we don't yet"; it can never explain "we think we hold
+ * something the broker has never heard of", which means the ledger invented a
+ * position and always warrants a warning.
+ */
+export function reconcileWithBroker(
+  brokerTickers: string[],
+  ledgerOpenTickers: string[],
+  pendingBuyTickers: string[]
+): BrokerReconciliation {
+  const norm = (t: string) => t.trim().toUpperCase();
+  const broker = new Set(brokerTickers.map(norm));
+  const ledger = new Set(ledgerOpenTickers.map(norm));
+  const pending = new Set(pendingBuyTickers.map(norm));
+
+  const brokerOnly: string[] = [];
+  const awaitingFill: string[] = [];
+  for (const t of [...broker].sort()) {
+    if (ledger.has(t)) continue;
+    if (pending.has(t)) awaitingFill.push(t);
+    else brokerOnly.push(t);
+  }
+
+  const ledgerOnly = [...ledger].sort().filter((t) => !broker.has(t));
+
+  return {
+    brokerOnly,
+    ledgerOnly,
+    awaitingFill,
+    disagrees: brokerOnly.length > 0 || ledgerOnly.length > 0,
+  };
+}

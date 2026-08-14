@@ -53,6 +53,14 @@ export const GET: RequestHandler = async () => {
     );
     const partialCount = Number(partialRows[0]?.count ?? 0);
 
+    // Tickers with a BUY the broker may already have filled but that
+    // reconcilePendingOrders() has not yet stamped as filled. The next pipeline
+    // cycle clears these, so they are a normal lag -- not a ledger disagreement.
+    const pendingBuyRows = await query<{ ticker: string }>(
+      `SELECT DISTINCT ticker FROM trades WHERE status = 'pending' AND action = 'BUY'`
+    );
+    const pendingBuyTickers = pendingBuyRows.map((r) => r.ticker);
+
     const { episodes, anomalies } = buildEpisodes(trades);
 
     const routeAnomalies = [...anomalies];
@@ -72,6 +80,7 @@ export const GET: RequestHandler = async () => {
       summary: summarizeClosed(episodes),
       behaviour: behaviourStats(episodes),
       anomalies: routeAnomalies,
+      pendingBuyTickers,
     });
   } catch (error) {
     console.error('portfolio-history error:', error);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildEpisodes, etDateString, summarizeClosed, behaviourStats, calendarDaysBetween,
-  sameDayRegression, type TradeRow, type Episode,
+  sameDayRegression, reconcileWithBroker, type TradeRow, type Episode,
 } from './episodes';
 
 const buy = (
@@ -350,5 +350,50 @@ describe('sameDayRegression', () => {
   it('yields zeros for an empty array', () => {
     const r = sameDayRegression([], FIX);
     expect(r).toEqual({ preFixCount: 0, postFixCount: 0, postFixDates: [] });
+  });
+});
+
+describe('reconcileWithBroker', () => {
+  it('reports agreement when both sides hold the same tickers', () => {
+    const r = reconcileWithBroker(['AAA', 'BBB'], ['BBB', 'AAA'], []);
+    expect(r.disagrees).toBe(false);
+    expect(r.brokerOnly).toEqual([]);
+    expect(r.ledgerOnly).toEqual([]);
+  });
+
+  it('does NOT cry wolf while a BUY is still awaiting reconciliation', () => {
+    // The bot buys roughly every 30 minutes and writes status='pending' until
+    // the NEXT cycle reconciles the fill. Without this exemption the warning
+    // fires several times a day and gets tuned out -- which is exactly how the
+    // same-day-sell gate went unnoticed for five weeks.
+    const r = reconcileWithBroker(['AAA', 'RDDT'], ['AAA'], ['RDDT']);
+    expect(r.disagrees).toBe(false);
+    expect(r.brokerOnly).toEqual([]);
+    expect(r.awaitingFill).toEqual(['RDDT']);
+  });
+
+  it('DOES flag a broker position the ledger cannot explain', () => {
+    const r = reconcileWithBroker(['AAA', 'ZZZ'], ['AAA'], []);
+    expect(r.disagrees).toBe(true);
+    expect(r.brokerOnly).toEqual(['ZZZ']);
+  });
+
+  it('flags a ledger position the broker does not have, even if pending', () => {
+    // A pending BUY never explains a ticker the broker does not hold at all --
+    // that direction means the ledger invented a position.
+    const r = reconcileWithBroker(['AAA'], ['AAA', 'GHOST'], ['GHOST']);
+    expect(r.disagrees).toBe(true);
+    expect(r.ledgerOnly).toEqual(['GHOST']);
+  });
+
+  it('is case- and order-insensitive on tickers', () => {
+    const r = reconcileWithBroker(['bbb', 'AAA'], ['aaa', 'BBB'], []);
+    expect(r.disagrees).toBe(false);
+  });
+
+  it('returns agreement for empty input rather than throwing', () => {
+    const r = reconcileWithBroker([], [], []);
+    expect(r.disagrees).toBe(false);
+    expect(r.awaitingFill).toEqual([]);
   });
 });

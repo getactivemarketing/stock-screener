@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { describeAlpacaDisconnect, type DisconnectDescription } from '$lib/alpaca-status';
   import {
-    calendarDaysBetween, etDateString, sameDayRegression,
+    calendarDaysBetween, etDateString, sameDayRegression, reconcileWithBroker,
     type Episode, type ClosedSummary, type BehaviourStats,
   } from '$lib/portfolio/episodes';
 
@@ -101,6 +101,7 @@
   let summary: ClosedSummary | null = null;
   let behaviour: BehaviourStats | null = null;
   let historyAnomalies: string[] = [];
+  let pendingBuyTickers: string[] = [];
   let historyError = '';
 
   /** The date the no_same_day_sell gate was finally closed. Rows after this are regressions. */
@@ -129,6 +130,7 @@
       summary = data.summary;
       behaviour = data.behaviour;
       historyAnomalies = data.anomalies ?? [];
+      pendingBuyTickers = data.pendingBuyTickers ?? [];
     } catch (e) {
       console.error('Failed to fetch portfolio history:', e);
       historyError = 'Could not load trade history.';
@@ -138,13 +140,24 @@
   /** Open episode per ticker, for entry date and days held on the positions table. */
   $: openByTicker = new Map(episodes.filter((e) => e.isOpen).map((e) => [e.ticker, e]));
   /**
-   * The correctness check the plan called out as THE invariant: open
-   * episodes should equal live broker positions. Gated on !historyError --
-   * when the history fetch fails, episodes stays [] and openByTicker.size
-   * is 0, which would otherwise read as a ledger-vs-broker disagreement
-   * when it's really just a failed network call.
+   * The correctness check the plan called out as THE invariant: the ledger's
+   * open positions should match the broker's, ticker for ticker.
+   *
+   * Compared by TICKER rather than by count, so the warning can name what is
+   * actually wrong, and exempting tickers whose BUY is still awaiting fill
+   * reconciliation -- those clear on the next pipeline cycle and are a normal
+   * lag, not a disagreement.
+   *
+   * Gated on !historyError: when the history fetch fails, episodes stays []
+   * and every broker position would look unexplained, turning a failed network
+   * call into a false data-integrity claim.
    */
-  $: positionsMismatch = !historyError && positions.length !== openByTicker.size;
+  $: reconciliation = reconcileWithBroker(
+    positions.map((p) => p.ticker),
+    [...openByTicker.keys()],
+    pendingBuyTickers
+  );
+  $: positionsMismatch = !historyError && reconciliation.disagrees;
 
   function daysSince(etDate: string): number {
     return calendarDaysBetween(etDate, etDateString(new Date().toISOString()));
@@ -349,8 +362,22 @@
       {/if}
       {#if positionsMismatch}
         <p class="note status-alert">
-          Ledger disagrees with broker: {positions.length} broker position{positions.length === 1 ? '' : 's'}
-          vs {openByTicker.size} open episode{openByTicker.size === 1 ? '' : 's'}.
+          Ledger disagrees with broker.
+          {#if reconciliation.brokerOnly.length > 0}
+            Held at broker but unexplained by the ledger: {reconciliation.brokerOnly.join(', ')}.
+          {/if}
+          {#if reconciliation.ledgerOnly.length > 0}
+            Open in the ledger but not held at the broker: {reconciliation.ledgerOnly.join(', ')}.
+          {/if}
+        </p>
+      {:else if !historyError && reconciliation.awaitingFill.length > 0}
+        <!-- Normal reconciliation lag, not a disagreement: the bot writes a
+             pending row on purchase and stamps it filled on the next cycle.
+             Stated plainly so the em dashes in this row's entry columns are
+             explained rather than mysterious. -->
+        <p class="note">
+          Awaiting fill confirmation: {reconciliation.awaitingFill.join(', ')} — entry details
+          appear once the next pipeline run reconciles the order.
         </p>
       {/if}
       {#if positions.length > 0}
