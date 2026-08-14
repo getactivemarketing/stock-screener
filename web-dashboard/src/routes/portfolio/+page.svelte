@@ -310,6 +310,9 @@
     <button class:active={activeTab === 'history'} on:click={() => activeTab = 'history'}>
       History ({summary?.count ?? 0})
     </button>
+    <button class:active={activeTab === 'behaviour'} on:click={() => activeTab = 'behaviour'}>
+      Behaviour
+    </button>
   </div>
 
   <!-- Positions Tab -->
@@ -596,6 +599,60 @@
         </table>
       {:else}
         <p class="note">No closed round trips yet.</p>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- Behaviour Tab -->
+  {#if activeTab === 'behaviour'}
+    <div class="card">
+      {#if historyAnomalies.length > 0}
+        <p class="note detail">Ledger anomalies: {historyAnomalies.join('; ')}</p>
+      {/if}
+      {#if behaviour}
+        <h3>Same-day round trips</h3>
+        <p class="note">
+          A position opened and closed on the same ET date. The no_same_day_sell gate was
+          made to work over three fixes ending 2026-08-10; entries on or before that date
+          are the pre-fix era.
+        </p>
+        <table class="data-table">
+          <thead><tr><th>ET Date</th><th>Count</th><th></th></tr></thead>
+          <tbody>
+            {#each behaviour.sameDayByDate as d}
+              <tr>
+                <td>{d.etDate}</td>
+                <td>{d.count}</td>
+                <td>{d.etDate <= '2026-08-10' ? 'pre-fix' : ''}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+
+        <h3>Most re-entered</h3>
+        <table class="data-table">
+          <thead><tr><th>Ticker</th><th>Episodes</th></tr></thead>
+          <tbody>
+            {#each behaviour.reEntries.slice(0, 15) as r}
+              <tr>
+                <td><a href="/ticker/{r.ticker}"><strong>{r.ticker}</strong></a></td>
+                <td>{r.episodes}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+
+        <h3>Hold duration</h3>
+        <table class="data-table">
+          <thead><tr><th>Bucket</th><th>Count</th></tr></thead>
+          <tbody>
+            {#each behaviour.holdBuckets as b}
+              <tr><td>{b.label}</td><td>{b.count}</td></tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="note">No trade history yet.</p>
       {/if}
     </div>
   {/if}
