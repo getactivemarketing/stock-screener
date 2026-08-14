@@ -100,6 +100,19 @@
   let historyAnomalies: string[] = [];
   let historyError = '';
 
+  /** The date the no_same_day_sell gate was finally closed. Rows after this are regressions. */
+  const SAME_DAY_FIX_DATE = '2026-08-10';
+
+  /** Same-day rows newest first, so a fresh regression lands at the top instead of the bottom. */
+  $: sameDayNewestFirst = behaviour ? [...behaviour.sameDayByDate].reverse() : [];
+  $: postFixSameDay = behaviour
+    ? behaviour.sameDayByDate.filter((d) => d.etDate > SAME_DAY_FIX_DATE)
+    : [];
+  $: postFixCount = postFixSameDay.reduce((sum, d) => sum + d.count, 0);
+  $: preFixCount = behaviour
+    ? behaviour.sameDayByDate.reduce((sum, d) => sum + d.count, 0) - postFixCount
+    : 0;
+
   async function fetchHistory() {
     try {
       const res = await fetch('/api/portfolio-history');
@@ -613,17 +626,29 @@
         <h3>Same-day round trips</h3>
         <p class="note">
           A position opened and closed on the same ET date. The no_same_day_sell gate was
-          made to work over three fixes ending 2026-08-10; entries on or before that date
-          are the pre-fix era.
+          made to work over three fixes ending {SAME_DAY_FIX_DATE}; entries on or before that
+          date are the pre-fix era.
         </p>
+        {#if postFixCount === 0}
+          <p class="note positive">
+            No same-day round trips since the {SAME_DAY_FIX_DATE} gate fix ({preFixCount} before it).
+          </p>
+        {:else}
+          <p class="note negative">
+            REGRESSION: {postFixCount} same-day round trip{postFixCount === 1 ? '' : 's'} since
+            the {SAME_DAY_FIX_DATE} gate fix.
+          </p>
+        {/if}
         <table class="data-table">
           <thead><tr><th>ET Date</th><th>Count</th><th></th></tr></thead>
           <tbody>
-            {#each behaviour.sameDayByDate as d}
+            {#each sameDayNewestFirst as d}
               <tr>
                 <td>{d.etDate}</td>
                 <td>{d.count}</td>
-                <td>{d.etDate <= '2026-08-10' ? 'pre-fix' : ''}</td>
+                <td class={d.etDate > SAME_DAY_FIX_DATE ? 'negative' : ''}>
+                  {d.etDate > SAME_DAY_FIX_DATE ? 'AFTER FIX' : 'pre-fix'}
+                </td>
               </tr>
             {/each}
           </tbody>
