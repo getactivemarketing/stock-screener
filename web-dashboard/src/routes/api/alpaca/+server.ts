@@ -200,94 +200,18 @@ export const GET: RequestHandler = async ({ url }) => {
   }
 };
 
-export const POST: RequestHandler = async ({ request }) => {
-  if (!isConfigured()) {
-    return json({ error: 'Alpaca not configured' }, { status: 401 });
-  }
-
-  try {
-    const body = await request.json();
-    const { action, ticker, quantity, orderType, price } = body;
-
-    if (!ticker || !quantity || !action) {
-      return json({ error: 'Missing required fields: ticker, quantity, action' }, { status: 400 });
-    }
-
-    const orderData: any = {
-      symbol: ticker.toUpperCase(),
-      qty: String(quantity),
-      side: action.toLowerCase(),
-      type: (orderType || 'market').toLowerCase(),
-      time_in_force: 'day',
-    };
-
-    // Add limit price for limit orders
-    if (orderType === 'LMT' && price) {
-      orderData.limit_price = String(price);
-    }
-
-    const response = await fetch(`${ALPACA_PAPER_API}/v2/orders`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify(orderData),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('Alpaca order error:', error);
-      return json({ error: `Order failed: ${error}` }, { status: response.status });
-    }
-
-    const order = await response.json();
-
-    return json({
-      success: true,
-      order: {
-        orderId: order.id,
-        ticker: order.symbol,
-        action: order.side.toUpperCase(),
-        orderType: order.type.toUpperCase(),
-        quantity: parseInt(order.qty),
-        price: parseFloat(order.limit_price) || null,
-        status: order.status.toUpperCase(),
-        filledQuantity: 0,
-        createTime: order.created_at,
-      },
-    });
-  } catch (error) {
-    console.error('Alpaca order error:', error);
-    return json({ error: 'Failed to place order' }, { status: 500 });
-  }
-};
-
-export const DELETE: RequestHandler = async ({ url }) => {
-  const orderId = url.searchParams.get('orderId');
-
-  if (!isConfigured()) {
-    return json({ error: 'Alpaca not configured' }, { status: 401 });
-  }
-
-  if (!orderId) {
-    return json({ error: 'Missing orderId' }, { status: 400 });
-  }
-
-  try {
-    const response = await fetch(`${ALPACA_PAPER_API}/v2/orders/${orderId}`, {
-      method: 'DELETE',
-      headers: getHeaders(),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      return json({ error: `Cancel failed: ${error}` }, { status: response.status });
-    }
-
-    return json({ success: true });
-  } catch (error) {
-    console.error('Alpaca cancel error:', error);
-    return json({ error: 'Failed to cancel order' }, { status: 500 });
-  }
-};
+/**
+ * READ-ONLY BY DESIGN.
+ *
+ * This route previously exported POST (place order) and DELETE (cancel order).
+ * Both were reachable by anyone who knew the deployment URL -- the only gate was
+ * isConfigured(), which checks that the SERVER holds Alpaca keys, not that the
+ * CALLER is authorised. An anonymous request could therefore trade on the
+ * account. They are removed rather than gated because this dashboard exists to
+ * audit the bot and review performance, not to place trades by hand.
+ *
+ * Do not reintroduce a write path here without real authentication.
+ */
 
 /**
  * `reason` distinguishes the three ways this endpoint reports connected:false.

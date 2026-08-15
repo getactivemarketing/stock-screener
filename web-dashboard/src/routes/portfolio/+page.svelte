@@ -48,15 +48,6 @@
   let connected = false;
   let disconnect: DisconnectDescription | null = null;
 
-  // Order form state
-  let orderTicker = '';
-  let orderAction: 'BUY' | 'SELL' = 'BUY';
-  let orderQuantity = 1;
-  let orderType: 'MKT' | 'LMT' = 'MKT';
-  let orderPrice = 0;
-  let orderSubmitting = false;
-  let orderMessage = '';
-
   interface AITrade {
     id: string;
     ticker: string;
@@ -212,46 +203,6 @@
     }
   }
 
-  async function submitOrder() {
-    if (!orderTicker || orderQuantity <= 0) {
-      orderMessage = 'Please enter ticker and quantity';
-      return;
-    }
-
-    orderSubmitting = true;
-    orderMessage = '';
-
-    try {
-      const res = await fetch('/api/alpaca', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: orderAction,
-          ticker: orderTicker.toUpperCase(),
-          quantity: orderQuantity,
-          orderType,
-          price: orderType === 'LMT' ? orderPrice : undefined,
-        }),
-      });
-
-      const result = await res.json();
-
-      if (result.success) {
-        orderMessage = `Order placed: ${orderAction} ${orderQuantity} ${orderTicker}`;
-        orderTicker = '';
-        orderQuantity = 1;
-        // Refresh orders and positions
-        await Promise.all([fetchOrders(), fetchPositions()]);
-      } else {
-        orderMessage = result.error || 'Order failed';
-      }
-    } catch (e) {
-      orderMessage = 'Failed to place order';
-    }
-
-    orderSubmitting = false;
-  }
-
   function formatCurrency(num: number): string {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -337,9 +288,6 @@
     <button class:active={activeTab === 'orders'} on:click={() => activeTab = 'orders'}>
       Orders ({orders.length})
     </button>
-    <button class:active={activeTab === 'trade'} on:click={() => activeTab = 'trade'}>
-      Trade
-    </button>
     <button class:active={activeTab === 'aiTrades'} on:click={() => activeTab = 'aiTrades'}>
       AI Trades ({aiTradesTotal})
     </button>
@@ -394,7 +342,6 @@
               <th>Market Value</th>
               <th>P/L</th>
               <th>P/L %</th>
-              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -417,14 +364,6 @@
                 </td>
                 <td class={pos.unrealizedPLPercent >= 0 ? 'positive' : 'negative'}>
                   {formatPercent(pos.unrealizedPLPercent)}
-                </td>
-                <td>
-                  <button
-                    class="btn-sell"
-                    on:click={() => { orderTicker = pos.ticker; orderAction = 'SELL'; orderQuantity = pos.quantity; activeTab = 'trade'; }}
-                  >
-                    Sell
-                  </button>
                 </td>
               </tr>
             {/each}
@@ -471,83 +410,6 @@
       {:else}
         <p class="no-data">No orders</p>
       {/if}
-    </div>
-  {/if}
-
-  <!-- Trade Tab -->
-  {#if activeTab === 'trade'}
-    <div class="card trade-card">
-      <h3>Place Paper Trade</h3>
-
-      <div class="trade-form">
-        <div class="form-row">
-          <div class="form-group">
-            <label for="ticker">Ticker</label>
-            <input
-              id="ticker"
-              type="text"
-              bind:value={orderTicker}
-              placeholder="AAPL"
-              class="input-ticker"
-            />
-          </div>
-
-          <div class="form-group">
-            <label for="action">Action</label>
-            <select id="action" bind:value={orderAction}>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label for="quantity">Quantity</label>
-            <input
-              id="quantity"
-              type="number"
-              bind:value={orderQuantity}
-              min="1"
-            />
-          </div>
-
-          <div class="form-group">
-            <label for="orderType">Order Type</label>
-            <select id="orderType" bind:value={orderType}>
-              <option value="MKT">Market</option>
-              <option value="LMT">Limit</option>
-            </select>
-          </div>
-        </div>
-
-        {#if orderType === 'LMT'}
-          <div class="form-row">
-            <div class="form-group">
-              <label for="price">Limit Price</label>
-              <input
-                id="price"
-                type="number"
-                bind:value={orderPrice}
-                min="0.01"
-                step="0.01"
-              />
-            </div>
-          </div>
-        {/if}
-
-        <button
-          class="btn-submit {orderAction.toLowerCase()}"
-          on:click={submitOrder}
-          disabled={orderSubmitting}
-        >
-          {orderSubmitting ? 'Placing...' : `${orderAction} ${orderTicker || 'Stock'}`}
-        </button>
-
-        {#if orderMessage}
-          <p class="order-message">{orderMessage}</p>
-        {/if}
-      </div>
     </div>
   {/if}
 
@@ -911,19 +773,7 @@
     color: var(--blue);
   }
 
-  .btn-sell {
-    background: var(--red);
-    color: white;
-    border: none;
-    padding: 0.25rem 0.75rem;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.75rem;
-  }
 
-  .btn-sell:hover {
-    opacity: 0.9;
-  }
 
   .buy { color: var(--green); }
   .sell { color: var(--red); }
@@ -946,16 +796,7 @@
     text-align: center;
   }
 
-  .trade-card h3 {
-    margin-bottom: 1.5rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    font-size: 0.875rem;
-  }
 
-  .trade-form {
-    max-width: 400px;
-  }
 
   .form-row {
     display: flex;
@@ -963,43 +804,12 @@
     margin-bottom: 1rem;
   }
 
-  .form-group {
-    flex: 1;
-  }
 
-  .form-group label {
-    display: block;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    margin-bottom: 0.5rem;
-  }
-
-  .form-group input,
-  .form-group select {
-    width: 100%;
-    padding: 0.75rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-size: 1rem;
-  }
 
   .input-ticker {
     text-transform: uppercase;
   }
 
-  .btn-submit {
-    width: 100%;
-    padding: 1rem;
-    border: none;
-    border-radius: 4px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 1rem;
-  }
 
   .btn-submit.buy {
     background: var(--green);
@@ -1011,18 +821,7 @@
     color: white;
   }
 
-  .btn-submit:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
 
-  .order-message {
-    margin-top: 1rem;
-    padding: 0.75rem;
-    background: var(--bg);
-    border-radius: 4px;
-    text-align: center;
-  }
 
   .ai-trade-card {
     border: 1px solid var(--border);
