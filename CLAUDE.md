@@ -162,7 +162,7 @@ DATABASE_URL=postgresql://user:pass@host:port/railway
 
 # Market Data APIs
 FINNHUB_API_KEY=your_finnhub_key
-ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
+ALPHA_VANTAGE_API_KEY=<ALPHA_VANTAGE_API_KEY>
 
 # LLM Classification
 PERPLEXITY_API_KEY=your_perplexity_key

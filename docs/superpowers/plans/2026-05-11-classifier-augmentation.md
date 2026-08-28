@@ -98,7 +98,7 @@ Use the public proxy URL (NOT `railway run` — it injects the internal hostname
 
 ```bash
 cd /Applications/XAMPP/xamppfiles/htdocs/Sites/stock-screener
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
+DATABASE_URL="$DATABASE_URL" \
   psql "$DATABASE_URL" -f database/migration-012-sector-and-veto.sql
 ```
 
@@ -107,7 +107,7 @@ Expected: `BEGIN`, `CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE` × 2, `COMMIT` 
 - [ ] **Step 3: Verify schema**
 
 ```bash
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
+DATABASE_URL="$DATABASE_URL" \
   psql "$DATABASE_URL" -c "\d sector_candidates" \
   -c "\d trade_decisions" \
   -c "SELECT sector_research_enabled, veto_layer_enabled, veto_layer_enforce FROM trading_config;"
@@ -894,7 +894,7 @@ So the scripts block becomes:
 
 ```bash
 cd /Applications/XAMPP/xamppfiles/htdocs/Sites/stock-screener/backend
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
+DATABASE_URL="$DATABASE_URL" \
   ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   npm run sector-research
 ```
@@ -915,7 +915,7 @@ If Claude returns garbage JSON: re-run, check the raw response logged by `claude
 - [ ] **Step 4: Verify rows in DB**
 
 ```bash
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
+DATABASE_URL="$DATABASE_URL" \
   psql "$DATABASE_URL" -c \
   "SELECT ticker, sector, suggested_tier, why_now FROM sector_candidates WHERE run_date = CURRENT_DATE ORDER BY id;"
 ```
@@ -1052,7 +1052,7 @@ If the quota system in your version differs in name / shape, match the existing 
 
 ```bash
 cd /Applications/XAMPP/xamppfiles/htdocs/Sites/stock-screener/backend
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
+DATABASE_URL="$DATABASE_URL" \
   ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   PERPLEXITY_API_KEY="$PERPLEXITY_API_KEY" \
   FINNHUB_API_KEY="$FINNHUB_API_KEY" \
@@ -1579,7 +1579,7 @@ Adjust column names (`decision_type`, `placed`, etc.) to match what `persistTrad
 Pre-flight: set `veto_layer_enabled=TRUE` and `veto_layer_enforce=FALSE` in trading_config so the veto runs and logs but does not block:
 
 ```bash
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
+DATABASE_URL="$DATABASE_URL" \
   psql "$DATABASE_URL" -c \
   "UPDATE trading_config SET veto_layer_enabled = TRUE, veto_layer_enforce = FALSE WHERE id = 1;"
 ```

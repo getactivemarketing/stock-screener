@@ -16,11 +16,11 @@
 
 ```bash
 cd /Applications/XAMPP/xamppfiles/htdocs/Sites/stock-screener/backend && \
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
-ALPACA_API_KEY=PKFBKKMLIBQT2YLJMFKZMO5RU2 \
-ALPACA_API_SECRET=63ycSwkU9tYKdC74X5Hj6tFcDAVhWivdCJsJVZa2sxyK \
+DATABASE_URL="$DATABASE_URL" \
+ALPACA_API_KEY=<ALPACA_API_KEY> \
+ALPACA_API_SECRET=<ALPACA_API_SECRET> \
 ALPACA_PAPER=true \
-ALPHA_VANTAGE_API_KEY=vAX02SJ9543I0E8F2 \
+ALPHA_VANTAGE_API_KEY=<ALPHA_VANTAGE_API_KEY> \
 FINNHUB_API_KEY=<FINNHUB_API_KEY> \
 MAX_TICKERS=20 \
 PERPLEXITY_API_KEY=<PERPLEXITY_API_KEY> \
@@ -123,7 +123,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/apply-009.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/apply-009.ts
 rm /tmp/apply-009.ts
 ```
 
@@ -2503,7 +2503,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/disable.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/disable.ts
 rm /tmp/disable.ts
 ```
 
@@ -2514,11 +2514,11 @@ Expected: `disabled`.
 Run:
 ```bash
 cd backend && \
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' \
-ALPACA_API_KEY=PKFBKKMLIBQT2YLJMFKZMO5RU2 \
-ALPACA_API_SECRET=63ycSwkU9tYKdC74X5Hj6tFcDAVhWivdCJsJVZa2sxyK \
+DATABASE_URL="$DATABASE_URL" \
+ALPACA_API_KEY=<ALPACA_API_KEY> \
+ALPACA_API_SECRET=<ALPACA_API_SECRET> \
 ALPACA_PAPER=true \
-ALPHA_VANTAGE_API_KEY=vAX02SJ9543I0E8F2 \
+ALPHA_VANTAGE_API_KEY=<ALPHA_VANTAGE_API_KEY> \
 FINNHUB_API_KEY=<FINNHUB_API_KEY> \
 MAX_TICKERS=25 \
 PERPLEXITY_API_KEY=<PERPLEXITY_API_KEY> \
@@ -2551,7 +2551,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/inspect.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/inspect.ts
 rm /tmp/inspect.ts
 ```
 
@@ -2599,7 +2599,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/cfg.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/cfg.ts
 rm /tmp/cfg.ts
 ```
 
@@ -2633,7 +2633,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/check.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/check.ts
 rm /tmp/check.ts
 ```
 
@@ -2660,7 +2660,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/enable.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/enable.ts
 rm /tmp/enable.ts
 ```
 
@@ -2682,7 +2682,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
   await pool.end();
 })();
 EOF
-DATABASE_URL='postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway' npx tsx /tmp/trades.ts
+DATABASE_URL="$DATABASE_URL" npx tsx /tmp/trades.ts
 rm /tmp/trades.ts
 ```
 

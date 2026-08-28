@@ -125,7 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_company_analysis_lookup
 
 Run (public proxy URL from project notes):
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -f database/migration-013-research.sql
+psql "$DATABASE_URL" -f database/migration-013-research.sql
 ```
 Expected: `CREATE TABLE`, `CREATE INDEX` (or no error if re-run).
 
@@ -133,7 +133,7 @@ Expected: `CREATE TABLE`, `CREATE INDEX` (or no error if re-run).
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -c "\d company_analysis"
+psql "$DATABASE_URL" -c "\d company_analysis"
 ```
 Expected: shows the 6 columns and the unique constraint.
 

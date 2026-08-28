@@ -97,7 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_entry_orders_plan ON entry_orders (entry_plan_id)
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -f database/migration-014-entry-analysis.sql
+psql "$DATABASE_URL" -f database/migration-014-entry-analysis.sql
 ```
 Expected: `CREATE TABLE` ×2, `CREATE INDEX` (or no error on re-run). If `psql` is unavailable, apply via a throwaway Node script using the `pg` package (web-dashboard has it + a `.env` DATABASE_URL); delete the script after.
 
@@ -105,7 +105,7 @@ Expected: `CREATE TABLE` ×2, `CREATE INDEX` (or no error on re-run). If `psql` 
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -c "\d entry_plans" -c "\d entry_orders"
+psql "$DATABASE_URL" -c "\d entry_plans" -c "\d entry_orders"
 ```
 Expected: both tables with the columns above; `entry_orders.client_order_id` UNIQUE; FK to entry_plans.
 
@@ -1121,7 +1121,7 @@ Run from `web-dashboard/`: `npm run build`. Expected: success.
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -c "SELECT to_regclass('public.entry_plans'), to_regclass('public.entry_orders');"
+psql "$DATABASE_URL" -c "SELECT to_regclass('public.entry_plans'), to_regclass('public.entry_orders');"
 ```
 Expected: both non-null.
 

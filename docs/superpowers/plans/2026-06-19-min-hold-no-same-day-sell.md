@@ -108,7 +108,7 @@ ALTER TABLE trading_config
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -f database/migration-015-min-hold.sql
+psql "$DATABASE_URL" -f database/migration-015-min-hold.sql
 ```
 Expected: `ALTER TABLE` (or no error on re-run). If `psql` is unavailable, apply via a throwaway Node `pg` script (backend has `pg` + a `.env` with `DATABASE_URL`); delete the script after.
 
@@ -116,7 +116,7 @@ Expected: `ALTER TABLE` (or no error on re-run). If `psql` is unavailable, apply
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -c "SELECT no_same_day_sell FROM trading_config WHERE id = 1;"
+psql "$DATABASE_URL" -c "SELECT no_same_day_sell FROM trading_config WHERE id = 1;"
 ```
 Expected: one row, value `t` (true).
 
@@ -334,7 +334,7 @@ Expected: no NEW errors introduced by this change (note any pre-existing unrelat
 
 Run:
 ```bash
-psql "postgresql://postgres:WMxIRbXdhNvmSMIBIayQYyfSXeATlQCE@switchyard.proxy.rlwy.net:15765/railway" -c "SELECT no_same_day_sell FROM trading_config WHERE id = 1;"
+psql "$DATABASE_URL" -c "SELECT no_same_day_sell FROM trading_config WHERE id = 1;"
 ```
 Expected: `t`.
 
